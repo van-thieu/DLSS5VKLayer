@@ -13,6 +13,9 @@
 #include "../common/shm_protocol.h"
 
 #include <QObject>
+#include <QWidget>
+#include <QSlider>
+#include <QLineEdit>
 #include <QString>
 #include <QStringList>
 #include <functional>
@@ -35,11 +38,45 @@ inline QString FormatTip(const QString& text) {
     return out;
 }
 
+// A slider paired with a text field so the user can either drag for speed or type for precision.
+// Works for both int and float ranges; internally the slider maps an integer 0..kSliderSteps onto
+// the requested [lo, hi] interval.
+class SliderEdit : public QWidget {
+    Q_OBJECT
+  public:
+    static constexpr int kSliderSteps = 10000;
+
+    SliderEdit(QWidget* parent, int lo, int hi, int step, int value);
+    SliderEdit(QWidget* parent, double lo, double hi, double step, double value);
+
+    int intValue() const;
+    double doubleValue() const;
+    void setIntValue(int v);
+    void setDoubleValue(double v);
+
+    bool isFloat() const { return _isFloat; }
+
+  signals:
+    void intChanged(int v);
+    void doubleChanged(double v);
+
+  private:
+    QSlider* _slider = nullptr;
+    QLineEdit* _edit = nullptr;
+    bool _isFloat = false;
+    int _loInt = 0, _hiInt = 0, _stepInt = 1;
+    double _loFloat = 0.0, _hiFloat = 1.0, _stepFloat = 0.05;
+
+    int valueToSliderPos(double v) const;
+    double sliderPosToValue(int pos) const;
+    void syncEditFromSlider();
+    void syncSliderFromEdit();
+    void updateEditText();
+};
+
 class QCheckBox;
 class QComboBox;
-class QDoubleSpinBox;
 class QFormLayout;
-class QSpinBox;
 class QWidget;
 
 class ShmBinder : public QObject {
@@ -59,16 +96,16 @@ class ShmBinder : public QObject {
     // a field that stores the negative, like the composition switch over compositionBypass.
     QCheckBox* AddBool(QFormLayout* form, const QString& label, Field field, const QString& tip,
                        Latch latch = Live, bool invert = false);
-    QSpinBox* AddInt(QFormLayout* form, const QString& label, Field field, int lo, int hi,
+    QWidget* AddInt(QFormLayout* form, const QString& label, Field field, int lo, int hi,
                      const QString& tip, Latch latch = Live);
-    QDoubleSpinBox* AddFloat(QFormLayout* form, const QString& label, Field field, double lo, double hi,
-                             double step, const QString& tip, Latch latch = Live);
+    QWidget* AddFloat(QFormLayout* form, const QString& label, Field field, double lo, double hi,
+                      double step, const QString& tip, Latch latch = Live);
     QComboBox* AddChoice(QFormLayout* form, const QString& label, Field field, const QStringList& options,
                          const QString& tip, Latch latch = Live);
 
     // A float stored as a fraction but shown as a percentage, which is how model resolution reads.
-    QSpinBox* AddPercent(QFormLayout* form, const QString& label, Field field, int lo, int hi,
-                         const QString& tip, Latch latch = Live);
+    QWidget* AddPercent(QFormLayout* form, const QString& label, Field field, int lo, int hi,
+                        const QString& tip, Latch latch = Live);
 
     // Pull every bound control's value out of the header. Safe to call at any time.
     void Reload();

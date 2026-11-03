@@ -671,6 +671,59 @@ static void PollHotkeys(DeviceChain* dc) {
     Log("[hotkey] %s -> neural rendering %s", dlssnr::KeyNameFromCode(key), wasOn ? "off" : "on");
 }
 
+// Steam's in-game overlay, and anything else that composites on top of the game rather than being the
+// game.
+//
+// The layer presents by consuming the caller's wait semaphores in its own submit and then presenting
+// with none, because that submit is the first thing to touch the swapchain image. A Vulkan semaphore is
+// one-shot: whoever waits on it consumes it. That is safe while this layer is the only present-path
+// consumer, and is a wait that never completes once something else in the chain also expects those
+// semaphores -- which is exactly what Steam's overlay is. In gameoverlayui the failure is an assert in
+// the compositor, SerializedSurface.cpp OnChromePaintBufferClientDisconnect, repeating every ten
+// seconds as Steam respawns it.
+//
+// VKLayer_DLSS5=1 reaches gameoverlayui by ordinary environment inheritance, so the overlay process ends
+// up running this layer inside Chromium's own compositor, stacked with steamoverlayvulkanlayer.so.
+// Nothing the overlay draws needs neural rendering, so the fix is to stand aside there rather than to
+// make the present path safe for two consumers.
+//
+// Overridable with DLSSNR_ALLOW_OVERLAY=1 for anyone who wants the old behaviour back.
+static bool AuxiliaryProcess() {
+    static const bool excluded = [] {
+        if (const char* o = getenv("DLSSNR_ALLOW_OVERLAY"); o && o[0] == '1') return false;
+
+        char name[64] = {};
+        // /proc/self/comm truncates at 15 characters, which is enough for these but not for
+        // steamoverlayrenderer, so the exe basename is used and comm is only the fallback.
+        if (readlink("/proc/self/exe", name, sizeof(name) - 1) > 0) {
+            const char* base = strrchr(name, '/');
+            std::snprintf(name, sizeof(name), "%s", base ? base + 1 : name);
+        }
+        if (!name[0]) {
+            if (FILE* f = std::fopen("/proc/self/comm", "r")) {
+                if (std::fgets(name, sizeof(name), f)) {
+                    name[std::strcspn(name, "\r\n")] = '\0';
+                }
+                std::fclose(f);
+            }
+        }
+        if (!name[0]) return false;
+
+        static const char* kAuxiliary[] = {
+            "gameoverlayui", "steamoverlayrenderer", "steamwebhelper",
+            "steamerrorreporter", "steamfossilize",
+        };
+        for (const char* a : kAuxiliary) {
+            if (std::strcmp(name, a) == 0) {
+                Log("[layer] standing aside: this is %s, not the game", name);
+                return true;
+            }
+        }
+        return false;
+    }();
+    return excluded;
+}
+
 static bool LayerEnabled() {
     static const bool e = [] {
         if (DuplicateLayerCopy()) return false;
@@ -680,7 +733,7 @@ static bool LayerEnabled() {
         const char* o = getenv("DLSSNR_ENABLE");
         return o && o[0] == '1';
     }();
-    return e;
+    return e && !AuxiliaryProcess();
 }
 
 // ---------------------------------------------------------------------------
@@ -762,6 +815,15 @@ static VKAPI_ATTR VkResult VKAPI_CALL Hook_EnumeratePhysicalDevices(
 // ---------------------------------------------------------------------------
 // Device hooks
 // ---------------------------------------------------------------------------
+// How long the present path will park on the GPU before it gives the frame up.
+//
+// Nothing on this path may wait without a bound. A fence whose signal never comes -- a semaphore
+// consumed elsewhere in the layer chain, a queue stalled behind one -- would park the render thread
+// for the rest of the session, and a game's own watchdog turns that into a crash report rather than
+// a stutter. One second rides out a compile hitch or a busy queue and still leaves the application
+// making progress; a timeout costs the composition of one swapchain, not the process.
+static constexpr uint64_t kPresentFenceWaitNs = 1000ull * 1000ull * 1000ull;
+
 // Both declared here for the idle repaint, which draws a frame the application did not ask for.
 static bool ProcessPresent(DeviceChain* dc, SwapchainState& sc, VkQueue queue,
                            VkImage swapchainImage, uint32_t waitCount, const VkSemaphore* pWaits,
@@ -1426,8 +1488,20 @@ static bool ProcessPresent(DeviceChain* dc, SwapchainState& sc, VkQueue queue,
     // than at the end of that frame keeps the game thread out of the GPU's way for the whole of the
     // helper's round trip. The capture pair that compose recorded lands with it.
     if (sc.leg2Pending) {
-        if (!NoteVk(dc, dc->vkWaitForFences(d, 1, &sc.fenceLeg2, VK_TRUE, UINT64_MAX),
-                    "vkWaitForFences(leg2)"))
+        const VkResult leg2 = dc->vkWaitForFences(d, 1, &sc.fenceLeg2, VK_TRUE, kPresentFenceWaitNs);
+        if (leg2 == VK_TIMEOUT) {
+            // The command buffer and the composed surfaces belong to a submit that has not landed,
+            // and nothing here may touch them until it does. Whatever that submit could be waiting
+            // on sits behind it on this queue, so waiting again is waiting for good: the frame is
+            // given up and the swapchain takes the fail-open path. See kPresentFenceWaitNs.
+            static std::atomic<uint32_t> n{0};
+            const uint32_t k = n.fetch_add(1);
+            if (k < 3) Log("[layer] leg2 fence still pending after %llu ms; swapchain passes through",
+                           (unsigned long long) (kPresentFenceWaitNs / 1000000ull));
+            sc.passThrough = true;
+            return false;
+        }
+        if (!NoteVk(dc, leg2, "vkWaitForFences(leg2)"))
             return false;
         dc->vkResetFences(d, 1, &sc.fenceLeg2);
         sc.leg2Pending = false;
@@ -1579,8 +1653,19 @@ static bool ProcessPresent(DeviceChain* dc, SwapchainState& sc, VkQueue queue,
         return true;
     };
     const auto waitAndReset = [&](VkFence fence) {
-        if (!NoteVk(dc, dc->vkWaitForFences(d, 1, &fence, VK_TRUE, UINT64_MAX), "vkWaitForFences"))
+        const VkResult r = dc->vkWaitForFences(d, 1, &fence, VK_TRUE, kPresentFenceWaitNs);
+        if (r == VK_TIMEOUT) {
+            // This submit already took the application's wait semaphores -- the caller's flag says
+            // so -- and it has not landed. The fence and the command buffer may not be reused
+            // while it is out, so the swapchain takes the fail-open path. See kPresentFenceWaitNs.
+            static std::atomic<uint32_t> n{0};
+            const uint32_t k = n.fetch_add(1);
+            if (k < 3) Log("[layer] present fence still pending after %llu ms; swapchain passes through",
+                           (unsigned long long) (kPresentFenceWaitNs / 1000000ull));
+            sc.passThrough = true;
             return false;
+        }
+        if (!NoteVk(dc, r, "vkWaitForFences")) return false;
         dc->vkResetFences(d, 1, &fence);
         return true;
     };

@@ -13,9 +13,8 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
-#include <QDoubleSpinBox>
 #include <QFormLayout>
-#include <QSpinBox>
+#include <QSlider>
 #include <QWidget>
 
 #include <cstdio>
@@ -38,33 +37,33 @@ int main(int argc, char** argv) {
     ShmBinder binder(&hdr, &page);
 
     auto* enabled = binder.AddBool(form, "Enabled", &ShmHeader::enabled, "");
-    auto* passes = binder.AddInt(form, "Passes", &ShmHeader::passes, 1, 30, "");
-    auto* detail = binder.AddFloat(form, "Detail", &ShmHeader::transferStrengthBits, 0, 4, 0.05, "");
+    auto* passes = qobject_cast<SliderEdit*>(binder.AddInt(form, "Passes", &ShmHeader::passes, 1, 30, ""));
+    auto* detail = qobject_cast<SliderEdit*>(binder.AddFloat(form, "Detail", &ShmHeader::transferStrengthBits, 0, 4, 0.05, ""));
     auto* style = binder.AddChoice(form, "Style", &ShmHeader::style, { "a", "b", "c" }, "",
                                    ShmBinder::AtCreate);
-    auto* scale = binder.AddPercent(form, "Scale", &ShmHeader::workingScaleBits, 25, 200, "");
+    auto* scale = qobject_cast<SliderEdit*>(binder.AddPercent(form, "Scale", &ShmHeader::workingScaleBits, 25, 200, ""));
 
     const uint32_t tune0 = hdr.tuningSeq.load();
 
     enabled->setChecked(false);
     check("bool reaches the header", hdr.enabled.load() == 0);
 
-    passes->setValue(4);
+    passes->setIntValue(4);
     check("int reaches the header", hdr.passes.load() == 4);
 
-    detail->setValue(2.5);
+    detail->setDoubleValue(2.5);
     check("float reaches the header", BitsToFloat(hdr.transferStrengthBits.load()) == 2.5f);
 
     style->setCurrentIndex(2);
     check("choice reaches the header", hdr.style.load() == 2);
 
-    scale->setValue(150);
+    scale->setIntValue(150);
     check("percent stores a fraction", BitsToFloat(hdr.workingScaleBits.load()) == 1.5f);
 
     check("a create-time setting bumps tuningSeq", hdr.tuningSeq.load() > tune0);
 
     const uint32_t tune1 = hdr.tuningSeq.load();
-    detail->setValue(1.0);
+    detail->setDoubleValue(1.0);
     check("a live setting does not bump tuningSeq", hdr.tuningSeq.load() == tune1);
 
     // The other direction: change the header underneath and reload.
@@ -75,9 +74,9 @@ int main(int argc, char** argv) {
     const uint32_t ctrl = hdr.controlSeq.load();
     binder.Reload();
     check("reload pulls bool", enabled->isChecked());
-    check("reload pulls int", passes->value() == 7);
-    check("reload pulls float", detail->value() == 3.25);
-    check("reload pulls percent", scale->value() == 75);
+    check("reload pulls int", passes->intValue() == 7);
+    check("reload pulls float", detail->doubleValue() == 3.25);
+    check("reload pulls percent", scale->intValue() == 75);
     check("reload does not write back", hdr.controlSeq.load() == ctrl);
 
     std::printf("%s\n", failures ? "FAILURES" : "all binder paths ok");

@@ -1,14 +1,13 @@
 #include "passdialog.h"
+#include "shm_binder.h"
 
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
-#include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QSignalBlocker>
-#include <QSpinBox>
 #include <QTabWidget>
 #include <QVBoxLayout>
 
@@ -67,34 +66,31 @@ void PassDialog::buildPage(uint32_t pass, QWidget* page) {
     };
 
     const auto makeFloat = [&](double lo, double hi, double step, uint32_t bits) {
-        auto* w = new QDoubleSpinBox(page);
-        w->setRange(lo, hi);
-        w->setSingleStep(step);
-        w->setValue(double(BitsToFloat(bits)));
-        connect(w, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+        auto* w = new SliderEdit(page, lo, hi, step, double(BitsToFloat(bits)));
+        connect(w, &SliderEdit::doubleChanged, this,
                 [this, pass](double) { writePass(pass); });
         return w;
     };
 
     auto* intensity = makeFloat(0.0, 4.0, 0.05, pc.intensityBits.load());
     addRow("Intensity", kOverrideIntensity, intensity,
-           [intensity] { return FloatToBits(float(intensity->value())); }, {});
+           [intensity] { return FloatToBits(float(intensity->doubleValue())); }, {});
 
     auto* structure = makeFloat(0.0, 4.0, 0.05, pc.localStructureBits.load());
     addRow("Local structure", kOverrideLocalStructure, structure,
-           [structure] { return FloatToBits(float(structure->value())); }, {});
+           [structure] { return FloatToBits(float(structure->doubleValue())); }, {});
 
     auto* tone = makeFloat(0.0, 4.0, 0.05, pc.localToneBits.load());
     addRow("Local tone", kOverrideLocalTone, tone,
-           [tone] { return FloatToBits(float(tone->value())); }, {});
+           [tone] { return FloatToBits(float(tone->doubleValue())); }, {});
 
     auto* skin = makeFloat(-1.0, 4.0, 0.05, pc.skinStructureBits.load());
     addRow("Skin structure", kOverrideSkinStructure, skin,
-           [skin] { return FloatToBits(float(skin->value())); }, {});
+           [skin] { return FloatToBits(float(skin->doubleValue())); }, {});
 
     auto* sharp = makeFloat(0.0, 1.0, 0.05, pc.sharpnessBits.load());
     addRow("Sharpness", kOverrideSharpness, sharp,
-           [sharp] { return FloatToBits(float(sharp->value())); }, {});
+           [sharp] { return FloatToBits(float(sharp->doubleValue())); }, {});
 
     auto* style = new QComboBox(page);
     style->addItems({ "Default", "Natural", "Cinematic" });
@@ -103,12 +99,10 @@ void PassDialog::buildPage(uint32_t pass, QWidget* page) {
             [this, pass](int) { writePass(pass); });
     addRow("Style", kOverrideStyle, style, [style] { return uint32_t(style->currentIndex()); }, {});
 
-    auto* preset = new QSpinBox(page);
-    preset->setRange(0, 15);
-    preset->setValue(int(pc.preset.load()));
-    connect(preset, QOverload<int>::of(&QSpinBox::valueChanged), this,
+    auto* preset = new SliderEdit(page, 0, 15, 1, int(pc.preset.load()));
+    connect(preset, &SliderEdit::intChanged, this,
             [this, pass](int) { writePass(pass); });
-    addRow("Preset", kOverridePreset, preset, [preset] { return uint32_t(preset->value()); }, {});
+    addRow("Preset", kOverridePreset, preset, [preset] { return uint32_t(preset->intValue()); }, {});
 
     auto* automask = new QCheckBox("on", page);
     automask->setChecked(pc.autoMask.load() != 0);

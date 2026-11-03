@@ -13,8 +13,6 @@ class QProcess;
 class QPushButton;
 class QToolButton;
 class QCheckBox;
-class QSpinBox;
-class QDoubleSpinBox;
 class QLabel;
 class QTimer;
 class QTabWidget;
@@ -112,14 +110,14 @@ private:
     QLineEdit* runnerPathEdit = nullptr;
     QAction* binariesPathAction = nullptr;
     QLabel* statusLabel = nullptr;
-    QSpinBox* captureFrames = nullptr;
+    QWidget* captureFrames = nullptr;
     QCheckBox* bypassCheck = nullptr;
     QFormLayout* compositionForm = nullptr;
     QVector<QWidget*> compositionRows;
     bool helperRunning = false;
     bool firstPoll = true;
     quint64 lastFrames = 0;
-    QSpinBox* rebuildSpin = nullptr;
+    QWidget* rebuildSpin = nullptr;
 
     ShmBinder* binder = nullptr;
     QString lastSettingsBlob;

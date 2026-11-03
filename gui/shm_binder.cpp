@@ -2,10 +2,10 @@
 
 #include <QCheckBox>
 #include <QComboBox>
-#include <QDoubleSpinBox>
 #include <QFormLayout>
+#include <QLineEdit>
 #include <QSignalBlocker>
-#include <QSpinBox>
+#include <QSlider>
 #include <QWidget>
 
 #include <cmath>
@@ -22,6 +22,150 @@ void ShmBinder::Write(Field field, uint32_t raw, Latch latch) {
     (_hdr->*field).store(raw);
     _hdr->controlSeq.fetch_add(1);
     if (latch == AtCreate) _hdr->tuningSeq.fetch_add(1);
+}
+
+// ---------- SliderEdit ----------
+
+SliderEdit::SliderEdit(QWidget* parent, int lo, int hi, int step, int value)
+    : QWidget(parent), _isFloat(false), _loInt(lo), _hiInt(hi), _stepInt(step) {
+    auto* lay = new QHBoxLayout(this);
+    lay->setContentsMargins(0, 0, 0, 0);
+    lay->setSpacing(6);
+
+    _slider = new QSlider(Qt::Horizontal, this);
+    _slider->setRange(0, kSliderSteps);
+    _slider->setValue(valueToSliderPos(double(value)));
+    lay->addWidget(_slider, 1);
+
+    _edit = new QLineEdit(this);
+    _edit->setFixedWidth(60);
+    _edit->setText(QString::number(value));
+    lay->addWidget(_edit, 0);
+
+    connect(_slider, &QSlider::valueChanged, this, [this](int pos) {
+        syncEditFromSlider();
+        if (_isFloat) {
+            emit doubleChanged(sliderPosToValue(pos));
+        } else {
+            emit intChanged(int(std::lround(sliderPosToValue(pos))));
+        }
+    });
+
+    connect(_edit, &QLineEdit::editingFinished, this, [this]() {
+        syncSliderFromEdit();
+    });
+
+    connect(_edit, &QLineEdit::returnPressed, this, [this]() {
+        syncSliderFromEdit();
+    });
+}
+
+SliderEdit::SliderEdit(QWidget* parent, double lo, double hi, double step, double value)
+    : QWidget(parent), _isFloat(true), _loFloat(lo), _hiFloat(hi), _stepFloat(step) {
+    auto* lay = new QHBoxLayout(this);
+    lay->setContentsMargins(0, 0, 0, 0);
+    lay->setSpacing(6);
+
+    _slider = new QSlider(Qt::Horizontal, this);
+    _slider->setRange(0, kSliderSteps);
+    _slider->setValue(valueToSliderPos(value));
+    lay->addWidget(_slider, 1);
+
+    _edit = new QLineEdit(this);
+    _edit->setFixedWidth(60);
+    updateEditText();
+    lay->addWidget(_edit, 0);
+
+    connect(_slider, &QSlider::valueChanged, this, [this](int pos) {
+        syncEditFromSlider();
+        emit doubleChanged(sliderPosToValue(pos));
+    });
+
+    connect(_edit, &QLineEdit::editingFinished, this, [this]() {
+        syncSliderFromEdit();
+    });
+
+    connect(_edit, &QLineEdit::returnPressed, this, [this]() {
+        syncSliderFromEdit();
+    });
+}
+
+int SliderEdit::valueToSliderPos(double v) const {
+    if (_isFloat) {
+        const double span = _hiFloat - _loFloat;
+        if (span == 0.0) return 0;
+        return int(std::lround((v - _loFloat) / span * kSliderSteps));
+    } else {
+        const double span = double(_hiInt - _loInt);
+        if (span == 0.0) return 0;
+        return int(std::lround((v - _loInt) / span * kSliderSteps));
+    }
+}
+
+double SliderEdit::sliderPosToValue(int pos) const {
+    if (_isFloat) {
+        return _loFloat + double(pos) / kSliderSteps * (_hiFloat - _loFloat);
+    } else {
+        return _loInt + double(pos) / kSliderSteps * (_hiInt - _loInt);
+    }
+}
+
+void SliderEdit::syncEditFromSlider() {
+    blockSignals(true);
+    updateEditText();
+    blockSignals(false);
+}
+
+void SliderEdit::syncSliderFromEdit() {
+    bool ok = false;
+    double v = 0.0;
+    if (_isFloat) {
+        v = _edit->text().toDouble(&ok);
+    } else {
+        v = double(_edit->text().toInt(&ok));
+    }
+    if (!ok) return;
+
+    if (_isFloat) {
+        v = std::clamp(v, _loFloat, _hiFloat);
+    } else {
+        v = std::clamp(v, double(_loInt), double(_hiInt));
+    }
+
+    blockSignals(true);
+    _slider->setValue(valueToSliderPos(v));
+    updateEditText();
+    blockSignals(false);
+
+    if (_isFloat) emit doubleChanged(v);
+    else emit intChanged(int(v));
+}
+
+void SliderEdit::updateEditText() {
+    double v = sliderPosToValue(_slider->value());
+    if (_isFloat) {
+        _edit->setText(QString::number(v, 'f', 2));
+    } else {
+        _edit->setText(QString::number(int(v)));
+    }
+}
+
+int SliderEdit::intValue() const {
+    return int(std::lround(sliderPosToValue(_slider->value())));
+}
+
+double SliderEdit::doubleValue() const {
+    return sliderPosToValue(_slider->value());
+}
+
+void SliderEdit::setIntValue(int v) {
+    _slider->setValue(valueToSliderPos(double(v)));
+    updateEditText();
+}
+
+void SliderEdit::setDoubleValue(double v) {
+    _slider->setValue(valueToSliderPos(v));
+    updateEditText();
 }
 
 QCheckBox* ShmBinder::AddBool(QFormLayout* form, const QString& label, Field field, const QString& tip,
@@ -43,37 +187,35 @@ QCheckBox* ShmBinder::AddBool(QFormLayout* form, const QString& label, Field fie
     return w;
 }
 
-QSpinBox* ShmBinder::AddInt(QFormLayout* form, const QString& label, Field field, int lo, int hi,
-                            const QString& tip, Latch latch) {
-    auto* w = new QSpinBox(_parent);
-    w->setRange(lo, hi);
+QWidget* ShmBinder::AddInt(QFormLayout* form, const QString& label, Field field, int lo, int hi,
+                           const QString& tip, Latch latch) {
+    auto* w = new SliderEdit(_parent, lo, hi, 1, lo);
     w->setToolTip(FormatTip(tip));
     form->addRow(label, w);
-    connect(w, QOverload<int>::of(&QSpinBox::valueChanged), this,
+    auto* se = qobject_cast<SliderEdit*>(w);
+    connect(se, &SliderEdit::intChanged, this,
             [this, field, latch](int v) { Write(field, uint32_t(v < 0 ? 0 : v), latch); });
-    _reloaders.push_back([this, w, field] {
+    _reloaders.push_back([this, se, field] {
         if (!_hdr) return;
-        QSignalBlocker block(w);
-        w->setValue(int((_hdr->*field).load()));
+        QSignalBlocker block(se);
+        se->setIntValue(int((_hdr->*field).load()));
     });
     _reloaders.back()();
     return w;
 }
 
-QDoubleSpinBox* ShmBinder::AddFloat(QFormLayout* form, const QString& label, Field field, double lo,
-                                    double hi, double step, const QString& tip, Latch latch) {
-    auto* w = new QDoubleSpinBox(_parent);
-    w->setRange(lo, hi);
-    w->setSingleStep(step);
-    w->setDecimals(step < 0.01 ? 3 : 2);
+QWidget* ShmBinder::AddFloat(QFormLayout* form, const QString& label, Field field, double lo,
+                             double hi, double step, const QString& tip, Latch latch) {
+    auto* w = new SliderEdit(_parent, lo, hi, step, lo);
     w->setToolTip(FormatTip(tip));
     form->addRow(label, w);
-    connect(w, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+    auto* se = qobject_cast<SliderEdit*>(w);
+    connect(se, &SliderEdit::doubleChanged, this,
             [this, field, latch](double v) { Write(field, FloatToBits(float(v)), latch); });
-    _reloaders.push_back([this, w, field] {
+    _reloaders.push_back([this, se, field] {
         if (!_hdr) return;
-        QSignalBlocker block(w);
-        w->setValue(double(BitsToFloat((_hdr->*field).load())));
+        QSignalBlocker block(se);
+        se->setDoubleValue(double(BitsToFloat((_hdr->*field).load())));
     });
     _reloaders.back()();
     return w;
@@ -97,20 +239,19 @@ QComboBox* ShmBinder::AddChoice(QFormLayout* form, const QString& label, Field f
     return w;
 }
 
-QSpinBox* ShmBinder::AddPercent(QFormLayout* form, const QString& label, Field field, int lo, int hi,
-                                const QString& tip, Latch latch) {
-    auto* w = new QSpinBox(_parent);
-    w->setRange(lo, hi);
-    w->setSuffix("%");
-    w->setSingleStep(5);
+QWidget* ShmBinder::AddPercent(QFormLayout* form, const QString& label, Field field, int lo, int hi,
+                               const QString& tip, Latch latch) {
+    // Percent is stored as a fraction (0..1) but shown as 0..100 on the slider.
+    auto* w = new SliderEdit(_parent, lo, hi, 5, lo);
     w->setToolTip(FormatTip(tip));
     form->addRow(label, w);
-    connect(w, QOverload<int>::of(&QSpinBox::valueChanged), this,
+    auto* se = qobject_cast<SliderEdit*>(w);
+    connect(se, &SliderEdit::intChanged, this,
             [this, field, latch](int v) { Write(field, FloatToBits(float(v) / 100.0f), latch); });
-    _reloaders.push_back([this, w, field] {
+    _reloaders.push_back([this, se, field] {
         if (!_hdr) return;
-        QSignalBlocker block(w);
-        w->setValue(int(std::lround(double(BitsToFloat((_hdr->*field).load())) * 100.0)));
+        QSignalBlocker block(se);
+        se->setIntValue(int(std::lround(double(BitsToFloat((_hdr->*field).load())) * 100.0)));
     });
     _reloaders.back()();
     return w;

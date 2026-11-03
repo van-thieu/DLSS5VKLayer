@@ -381,8 +381,7 @@ MainWindow::MainWindow(QWidget* parent) : QWidget(parent) {
     auto* rebuildLay = new QHBoxLayout(rebuildRow);
     rebuildLay->setContentsMargins(8, 4, 8, 4);
     auto* rebuildLabel = new QLabel("Rebuild spacing (ms)", rebuildRow);
-    rebuildSpin = new QSpinBox(rebuildRow);
-    rebuildSpin->setRange(0, 5000);
+    rebuildSpin = new SliderEdit(rebuildRow, 0, 5000, 1, 0);
     rebuildSpin->setToolTip(FormatTip(
         "How long the helper waits after a model setting changes before it rebuilds the pass,\n"
         "and between one rebuild and the next.\n"
@@ -391,7 +390,10 @@ MainWindow::MainWindow(QWidget* parent) : QWidget(parent) {
         "Lower is snappier; 0 rebuilds immediately and chains the rest back to back.\n"
         "Raise it if the model ever stops answering after changing settings."));
     rebuildLabel->setToolTip(rebuildSpin->toolTip());
-    if (hdr) rebuildSpin->setValue(int(hdr->rebuildSettleMs.load()));
+    if (hdr) {
+        auto* se = qobject_cast<SliderEdit*>(rebuildSpin);
+        se->setIntValue(int(hdr->rebuildSettleMs.load()));
+    }
     rebuildLay->addWidget(rebuildLabel);
     rebuildLay->addWidget(rebuildSpin);
     rebuildAction->setDefaultWidget(rebuildRow);
@@ -424,7 +426,7 @@ MainWindow::MainWindow(QWidget* parent) : QWidget(parent) {
     auto* openBinariesAction = binariesMenu->addAction("Open binaries folder", this, &MainWindow::openBinariesFolder);
     openBinariesAction->setToolTip("Open the folder the helper loads the NGX DLLs from.");
     gearBtn->setMenu(gearMenu);
-    connect(rebuildSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int v) {
+    connect(qobject_cast<SliderEdit*>(rebuildSpin), &SliderEdit::intChanged, this, [this](int v) {
         if (!hdr) return;
         hdr->rebuildSettleMs.store(uint32_t(v));
         hdr->controlSeq.fetch_add(1);
@@ -783,7 +785,8 @@ void MainWindow::applyDefaults() {
     if (binder) binder->Reload();
     if (rebuildSpin) {
         QSignalBlocker block(rebuildSpin);
-        rebuildSpin->setValue(int(hdr->rebuildSettleMs.load()));
+        auto* se = qobject_cast<SliderEdit*>(rebuildSpin);
+        se->setIntValue(int(hdr->rebuildSettleMs.load()));
     }
     updateCompositionVisibility();
     lastSettingsBlob = settingsBlob();
@@ -1192,7 +1195,8 @@ void MainWindow::updateStatus() {
     // overwrite the number under their cursor.
     if (hdr && rebuildSpin && !rebuildSpin->hasFocus()) {
         QSignalBlocker block(rebuildSpin);
-        rebuildSpin->setValue(int(hdr->rebuildSettleMs.load()));
+        auto* se = qobject_cast<SliderEdit*>(rebuildSpin);
+        se->setIntValue(int(hdr->rebuildSettleMs.load()));
     }
     updateCompositionVisibility();
 
@@ -1598,9 +1602,7 @@ binder->AddInt(f, "Passes", &ShmHeader::passes, 1, int(kMaxPasses),
         f->addRow(keyNote);
 
         auto* capRow = new QHBoxLayout;
-        captureFrames = new QSpinBox(col->parentWidget());
-        captureFrames->setRange(1, 64);
-        captureFrames->setValue(8);
+        captureFrames = new SliderEdit(col->parentWidget(), 1, 64, 1, 8);
         captureBtn = new QPushButton("Capture frames", col->parentWidget());
         captureBtn->setToolTip(FormatTip(
             "Writes that many matched before/after pairs to the state directory.\n"
@@ -1611,7 +1613,7 @@ binder->AddInt(f, "Passes", &ShmHeader::passes, 1, int(kMaxPasses),
 
         connect(captureBtn, &QPushButton::clicked, this, [this] {
             if (!hdr) return;
-            hdr->captureRequest.store(uint32_t(captureFrames->value()));
+            hdr->captureRequest.store(uint32_t(qobject_cast<SliderEdit*>(captureFrames)->intValue()));
             hdr->controlSeq.fetch_add(1);
         });
     }
