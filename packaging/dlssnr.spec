@@ -3,8 +3,8 @@
 %global _include_debuginfo_sources 0
 # Overridable version (packaging/make-dist.sh passes these from
 # DLSSNR_VERSION/DLSSNR_RELEASE via --define; defaults keep local builds working).
-%{!?dlssnr_version: %global dlssnr_version 0.3.1}
-%{!?dlssnr_release: %global dlssnr_release 2}
+%{!?dlssnr_version: %global dlssnr_version 0.3.2}
+%{!?dlssnr_release: %global dlssnr_release 1}
 %global pkg_release %{dlssnr_release}
 
 Name:           dlssnr
@@ -47,6 +47,9 @@ cp -a root/usr %{buildroot}/usr
 %{_bindir}/dlssnr-shmctl
 %{_datadir}/vulkan/implicit_layer.d/VK_LAYER_NV_dlssnr.*.json
 %{_datadir}/applications/dlssnr.desktop
+# Compiled UI translations, staged by make-dist.sh. A glob: when the build ran
+# without lrelease there are no .qm files and nothing is claimed here.
+%{_datadir}/dlssnr/translations/*.qm
 %doc %{_datadir}/doc/dlssnr/dxvk-license.txt
 
 %post
