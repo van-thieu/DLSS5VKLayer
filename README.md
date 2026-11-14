@@ -230,11 +230,12 @@ The layer is intended to coexist with the Steam overlay. If a game crashes durin
 
 ## Game Profiles
 
-Tuned settings for individual games live in [`game_profiles/`](game_profiles/). Each file is a
-profile as written by `dlssnr_gui`, so it can be copied straight into the folder the GUI reads:
+Tuned settings for individual games live in [`game_profiles/`](game_profiles/), grouped by the GPU
+they were calibrated on — currently an RTX 5090. Each file is a profile as written by `dlssnr_gui`,
+so it can be copied straight into the folder the GUI reads:
 
 ```bash
-cp game_profiles/AION2.ini ~/.config/dlssnr/profiles/
+cp game_profiles/rtx5090/AION2.ini ~/.config/dlssnr/profiles/
 ```
 
 Restart `dlssnr-gui` afterwards and pick the profile from the dropdown. See

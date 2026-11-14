@@ -228,6 +228,18 @@ VKLayer_DLSS5=1 %command%
 
 该层的设计目标是与 Steam 覆盖层共存。如果游戏在创建 Vulkan 设备时崩溃，请确认你使用的是 `0.2.1-3` 或更新版本。
 
+## 游戏配置档
+
+针对各个游戏调校的设置位于 [`game_profiles/`](game_profiles/)，并按其校准所用的 GPU 分组 ——
+目前是 RTX 5090。每个文件都是由 `dlssnr_gui` 写出的配置档，因此可以直接复制到 GUI 读取的目录中：
+
+```bash
+cp game_profiles/rtx5090/AION2.ini ~/.config/dlssnr/profiles/
+```
+
+随后重启 `dlssnr-gui`，并从下拉框中选择该配置档。列表以及在 GUI 中修改后如何更新配置档，
+参见 [`game_profiles/README.md`](game_profiles/README.md)。
+
 ## Steam / Proton 容器
 
 Steam 游戏运行在 Steam Linux Runtime / `pressure-vessel` 容器内，该容器给游戏一个
