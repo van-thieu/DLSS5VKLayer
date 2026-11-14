@@ -501,9 +501,9 @@ struct SwapchainState {
     VkCommandBuffer cb = VK_NULL_HANDLE;
     bool ready = false;
     bool passThrough = false;
-    // The device's submit counter when this swapchain was last presented. A counter that has not
-    // moved since means the application submitted nothing new for this image, so the capture copy
-    // cannot be ordered behind the frame's work by queue order alone.
+    // The present queue's submit count when this swapchain was last presented. A count that has
+    // not moved since means the application submitted nothing new to that queue for this image,
+    // so the capture copy cannot be ordered behind the frame's work by queue order alone.
     uint64_t submitsAtLastPresent = 0;
 
     // The pass. Owns every surface it needs, including the transport pair -- the shared-memory
@@ -571,6 +571,12 @@ struct DeviceChain {
     // image came from somewhere else is not mistaken for one that did.
     uint64_t submitCounter = 0;
     VkQueue lastSubmitQueue = VK_NULL_HANDLE;
+    // Submits counted per queue. The frame's work has to have been submitted to the queue being
+    // presented for queue order to place the capture copy behind it. A device-wide "last submit"
+    // is not enough: the frame generation in this chain submits its own work on a queue of its
+    // own, and that submit would be the last one seen even though the frame itself was rendered
+    // somewhere else.
+    std::unordered_map<VkQueue, uint64_t> queueSubmits;
     // Phase 5: the dma-buf exchange. The export sequences last imported; a new sequence means the
     // image behind the descriptor changed and the reference is taken again.
     uint32_t proxySeqSeen = 0;
@@ -1676,8 +1682,8 @@ static bool ProcessPresent(DeviceChain* dc, SwapchainState& sc, VkQueue queue,
     // When that does not hold -- the frame's work went to another queue and was synchronised here
     // by the waits -- there is no ordering to be had without taking them, so the frame is given
     // through untouched instead of taking them.
-    const bool orderedByQueue =
-        (dc->lastSubmitQueue == queue) && (dc->submitCounter != sc.submitsAtLastPresent);
+    const uint64_t queueSubmits = dc->queueSubmits[queue];
+    const bool orderedByQueue = queueSubmits != sc.submitsAtLastPresent;
     if (waitCount > 0 && !orderedByQueue) {
         static std::atomic<uint32_t> n{0};
         const uint32_t k = n.fetch_add(1);
@@ -1866,7 +1872,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL Hook_QueuePresentKHR(VkQueue queue,
             // The counter moves on after the frame, never before: the ordering test inside
             // ProcessPresent compares against the count as it stood at the previous present, and
             // moving it first would make every frame look like it had no submit of its own.
-            sc.submitsAtLastPresent = dc->submitCounter;
+            sc.submitsAtLastPresent = dc->queueSubmits[queue];
             waitsConsumed = waitsConsumed || submittedWaits;
             if (!composed) ++dc->framesPassedThrough;
             if (VerboseEnabled()) {
@@ -1921,6 +1927,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL Hook_QueueSubmit(VkQueue queue, uint32_t s
     if (r == VK_SUCCESS) {
         dc->lastSubmitQueue = queue;
         ++dc->submitCounter;
+        ++dc->queueSubmits[queue];
     }
     return r;
 }
@@ -1934,6 +1941,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL Hook_QueueSubmit2(VkQueue queue, uint32_t 
     if (r == VK_SUCCESS) {
         dc->lastSubmitQueue = queue;
         ++dc->submitCounter;
+        ++dc->queueSubmits[queue];
     }
     return r;
 }
