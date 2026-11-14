@@ -10,3 +10,6 @@
 *.swp
 .qmake.stash
 moc_*.cpp
+
+# Per-machine NGX/OptiScaler drop used by the DLSS NR helper; never redistributable
+/dlssnr/
