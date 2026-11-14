@@ -228,6 +228,19 @@ The layer is disabled unless `VKLayer_DLSS5=1` is present.
 
 The layer is intended to coexist with the Steam overlay. If a game crashes during Vulkan device creation, make sure you are using `0.2.1-3` or newer.
 
+## Game Profiles
+
+Tuned settings for individual games live in [`game_profiles/`](game_profiles/). Each file is a
+profile as written by `dlssnr_gui`, so it can be copied straight into the folder the GUI reads:
+
+```bash
+cp game_profiles/AION2.ini ~/.config/dlssnr/profiles/
+```
+
+Restart `dlssnr-gui` afterwards and pick the profile from the dropdown. See
+[`game_profiles/README.md`](game_profiles/README.md) for the list and for how to refresh a profile
+after changing it in the GUI.
+
 ## Steam / Proton Containers
 
 Steam games run inside the Steam Linux Runtime / `pressure-vessel` container, which gives the game a
