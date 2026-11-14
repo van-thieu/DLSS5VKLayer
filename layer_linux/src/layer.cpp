@@ -499,10 +499,12 @@ struct SwapchainState {
     bool leg2Pending = false;
     VkCommandPool pool = VK_NULL_HANDLE;
     VkCommandBuffer cb = VK_NULL_HANDLE;
-    // Reused by the present path; resizing only occurs when an unusual caller supplies more waits.
-    std::vector<VkPipelineStageFlags> waitStages;
     bool ready = false;
     bool passThrough = false;
+    // The device's submit counter when this swapchain was last presented. A counter that has not
+    // moved since means the application submitted nothing new for this image, so the capture copy
+    // cannot be ordered behind the frame's work by queue order alone.
+    uint64_t submitsAtLastPresent = 0;
 
     // The pass. Owns every surface it needs, including the transport pair -- the shared-memory
     // regions themselves when the driver will import them, host-visible staging when it will not.
@@ -560,6 +562,15 @@ struct DeviceChain {
     ShmMap shm;
     uint64_t framesComposed = 0;
     uint64_t framesPassedThrough = 0;
+    // What the application has submitted, and where.
+    //
+    // A present is only valid after the work that produces the image has been submitted, so a
+    // submit of the application's own on the queue being presented is enough to order a capture
+    // copy behind that work without touching the application's wait semaphores. The counter says
+    // whether there was such a submit since this swapchain was last presented, so a frame whose
+    // image came from somewhere else is not mistaken for one that did.
+    uint64_t submitCounter = 0;
+    VkQueue lastSubmitQueue = VK_NULL_HANDLE;
     // Phase 5: the dma-buf exchange. The export sequences last imported; a new sequence means the
     // image behind the descriptor changed and the reference is taken again.
     uint32_t proxySeqSeen = 0;
@@ -1647,13 +1658,39 @@ static bool ProcessPresent(DeviceChain* dc, SwapchainState& sc, VkQueue queue,
     si.commandBufferCount = 1;
     si.pCommandBuffers = &cb;
 
-    // Only the first submit waits: the later one is ordered behind it on the same queue and fenced
-    // besides, and a binary semaphore may be waited on once per signal.
-    if (sc.waitStages.size() < waitCount)
-        sc.waitStages.resize(waitCount, VK_PIPELINE_STAGE_TRANSFER_BIT);
-    si.waitSemaphoreCount = waitCount;
-    si.pWaitSemaphores = waitCount ? waitSemaphores : nullptr;
-    si.pWaitDstStageMask = waitCount ? sc.waitStages.data() : nullptr;
+    // The application's wait semaphores are not taken.
+    //
+    // A binary semaphore may be waited on once, and the present path here can have more than one
+    // consumer: the overlay, and the frame generation that sits in this same chain when the game
+    // has it turned on. Taking the application's waits and then presenting with none satisfies
+    // this layer alone -- the dependency the waits expressed is carried by queue order instead --
+    // but it starves every other consumer of those semaphores, and the wait that never completes
+    // is a frame that never arrives. The game then sits on its render thread until its own
+    // watchdog gives up on it.
+    //
+    // The dependency does not have to travel on the semaphores at all. A present is only valid
+    // after the work that produces the image has been submitted, so on the queue being presented
+    // the application's own submit is already ahead of anything this layer submits now. That is
+    // queue order, and queue order consumes nothing.
+    //
+    // When that does not hold -- the frame's work went to another queue and was synchronised here
+    // by the waits -- there is no ordering to be had without taking them, so the frame is given
+    // through untouched instead of taking them.
+    const bool orderedByQueue =
+        (dc->lastSubmitQueue == queue) && (dc->submitCounter != sc.submitsAtLastPresent);
+    if (waitCount > 0 && !orderedByQueue) {
+        static std::atomic<uint32_t> n{0};
+        const uint32_t k = n.fetch_add(1);
+        if (k < 3)
+            Log("[layer] frame was not submitted to this queue; passing it through rather than "
+                "taking the application's wait semaphores");
+        return false;
+    }
+
+    // Leg 1 waits on nothing: the application's submit is already ahead of it on this queue.
+    si.waitSemaphoreCount = 0;
+    si.pWaitSemaphores = nullptr;
+    si.pWaitDstStageMask = nullptr;
     const auto dropWaits = [&] {
         si.waitSemaphoreCount = 0;
         si.pWaitSemaphores = nullptr;
@@ -1669,9 +1706,11 @@ static bool ProcessPresent(DeviceChain* dc, SwapchainState& sc, VkQueue queue,
     const auto waitAndReset = [&](VkFence fence) {
         const VkResult r = dc->vkWaitForFences(d, 1, &fence, VK_TRUE, kPresentFenceWaitNs);
         if (r == VK_TIMEOUT) {
-            // This submit already took the application's wait semaphores -- the caller's flag says
-            // so -- and it has not landed. The fence and the command buffer may not be reused
+            // This submit has not landed. The fence and the command buffer may not be reused
             // while it is out, so the swapchain takes the fail-open path. See kPresentFenceWaitNs.
+            //
+            // Nothing of the application's is at stake here any more: its wait semaphores were
+            // never taken, so the present still carries them and the game still gets its frame.
             static std::atomic<uint32_t> n{0};
             const uint32_t k = n.fetch_add(1);
             if (k < 3) Log("[layer] present fence still pending after %llu ms; swapchain passes through",
@@ -1692,6 +1731,10 @@ static bool ProcessPresent(DeviceChain* dc, SwapchainState& sc, VkQueue queue,
     }
     // This one fence is real: the proxy the helper is about to read is written by these commands,
     // and the sequence number must not outrun the pixels it announces.
+    //
+    // The submit waits on nothing. The application's own submit for this frame is already ahead of
+    // it on this queue, so the capture copy reads a finished image without taking the
+    // application's wait semaphores to say so.
     if (!endAndSubmit(sc.fenceLeg1)) return false;
     if (!waitAndReset(sc.fenceLeg1)) return false;
     dropWaits();
@@ -1761,11 +1804,16 @@ static VKAPI_ATTR VkResult VKAPI_CALL Hook_QueuePresentKHR(VkQueue queue,
     if (!dc || !dc->vkQueuePresentKHR) return VK_ERROR_INITIALIZATION_FAILED;
     dc->lastPresentMs.store(NowMs(), std::memory_order_relaxed);
 
-    // Whether this call's wait semaphores have already been consumed by a submit of ours. They are
-    // handed to the first swapchain we actually process; every path after that presents with none,
-    // because a semaphore signalled once may only be waited on once. Presenting with them a second
-    // time is a wait that never completes -- which is what a second layer in the chain, Steam's
-    // overlay among them, turns from a latent bug into a hang.
+    // Whether this call's wait semaphores have already been consumed by a submit of ours.
+    //
+    // They no longer are: the present path below does not take the application's waits at all,
+    // because taking them starves the other consumers of the present path -- the overlay, and the
+    // frame generation that sits in this same chain when the game has it enabled -- and a wait
+    // that never completes is a frame that never arrives. The capture copy is ordered behind the
+    // application's own submit by queue order instead, which consumes nothing.
+    //
+    // The flag is kept because a path that did consume them would have to present with none, and
+    // presenting with them a second time is a wait that never completes.
     bool waitsConsumed = false;
 
     // Held from here to the present at the end, alongside Hook_QueueSubmit{,2}. Vulkan requires
@@ -1810,11 +1858,15 @@ static VKAPI_ATTR VkResult VKAPI_CALL Hook_QueuePresentKHR(VkQueue queue,
                 ReleasePrimary(dc->self, pPresentInfo->pSwapchains[i]);
                 continue;
             }
-            const uint32_t waitCount = waitsConsumed ? 0u : pPresentInfo->waitSemaphoreCount;
+            const uint32_t waitCount = pPresentInfo->waitSemaphoreCount;
             bool submittedWaits = false;
             const bool composed = ProcessPresent(dc, sc, queue, sc.images[pPresentInfo->pImageIndices[i]],
                                                  waitCount, pPresentInfo->pWaitSemaphores,
                                                  /*repaint=*/false, &submittedWaits);
+            // The counter moves on after the frame, never before: the ordering test inside
+            // ProcessPresent compares against the count as it stood at the previous present, and
+            // moving it first would make every frame look like it had no submit of its own.
+            sc.submitsAtLastPresent = dc->submitCounter;
             waitsConsumed = waitsConsumed || submittedWaits;
             if (!composed) ++dc->framesPassedThrough;
             if (VerboseEnabled()) {
@@ -1835,10 +1887,14 @@ static VKAPI_ATTR VkResult VKAPI_CALL Hook_QueuePresentKHR(VkQueue queue,
         }
     }
 
+    // The application's wait semaphores go back to it untouched. They are what carries the
+    // dependency between the work that produced the image and the present, and the present is
+    // the one that owes them.
+    //
+    // pNext is carried through untouched as well: present ids, present timing and the rest belong
+    // to the caller and none of them are about semaphores.
     if (!waitsConsumed) return dc->vkQueuePresentKHR(queue, pPresentInfo);
 
-    // pNext is carried through untouched: present ids, present timing and the rest belong to the
-    // caller and none of them are about semaphores.
     VkPresentInfoKHR pi = *pPresentInfo;
     pi.waitSemaphoreCount = 0;
     pi.pWaitSemaphores = nullptr;
@@ -1860,7 +1916,13 @@ static VKAPI_ATTR VkResult VKAPI_CALL Hook_QueueSubmit(VkQueue queue, uint32_t s
     DeviceChain* dc = DeviceForQueue(queue);
     if (!dc || !dc->vkQueueSubmit) return VK_ERROR_INITIALIZATION_FAILED;
     std::lock_guard<std::mutex> lk(dc->lock);
-    return dc->vkQueueSubmit(queue, submitCount, pSubmits, fence);
+    const VkResult r = dc->vkQueueSubmit(queue, submitCount, pSubmits, fence);
+    // Recorded after the call, so a submit that failed is not counted as work that exists.
+    if (r == VK_SUCCESS) {
+        dc->lastSubmitQueue = queue;
+        ++dc->submitCounter;
+    }
+    return r;
 }
 
 static VKAPI_ATTR VkResult VKAPI_CALL Hook_QueueSubmit2(VkQueue queue, uint32_t submitCount,
@@ -1868,7 +1930,12 @@ static VKAPI_ATTR VkResult VKAPI_CALL Hook_QueueSubmit2(VkQueue queue, uint32_t 
     DeviceChain* dc = DeviceForQueue(queue);
     if (!dc || !dc->vkQueueSubmit2) return VK_ERROR_INITIALIZATION_FAILED;
     std::lock_guard<std::mutex> lk(dc->lock);
-    return dc->vkQueueSubmit2(queue, submitCount, pSubmits, fence);
+    const VkResult r = dc->vkQueueSubmit2(queue, submitCount, pSubmits, fence);
+    if (r == VK_SUCCESS) {
+        dc->lastSubmitQueue = queue;
+        ++dc->submitCounter;
+    }
+    return r;
 }
 
 static VKAPI_ATTR VkResult VKAPI_CALL Hook_QueueWaitIdle(VkQueue queue) {
