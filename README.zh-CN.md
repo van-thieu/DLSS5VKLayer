@@ -6,6 +6,31 @@ DLSS5VKLayer 是一个 Linux Vulkan 层加助手服务，它把呈现的帧转�
 
 本项目处于实验阶段，目标是本地测试与研究。
 
+## 关于此 Fork
+
+本仓库是 [bmitch87/DLSS5VKLayer](https://github.com/bmitch87/DLSS5VKLayer) 的 Fork，
+上游跟踪在 `0.3.2-1` 标签。它在该基线之上带有本地改动，本 README 其余部分描述的是
+这个 Fork，而不是上游。
+
+- **呈现路径不再取走应用程序的等待信号量。** 捕获副本改为通过队列顺序排在应用程序
+  自身提交之后，这不会消耗任何东西，而应用程序的信号量会原样交还。取走它们会让呈现
+  路径上的其他消费者挨饿 —— Steam 的覆盖层，以及游戏启用帧生成时处在同一条链上的
+  帧生成 —— 而一个永远等不到的等待，就是一个永远到不了的帧。
+- **Steam 的辅助进程会被避开。** 该层在 `gameoverlayui`、`steamoverlayrenderer`、
+  `steamwebhelper`、`steamerrorreporter` 和 `steamfossilize` 中会主动让开 —— 在那里
+  并不需要神经渲染。设置 `DLSSNR_ALLOW_OVERLAY=1` 可恢复旧行为。
+- **呈现路径上的等待有上限。** 呈现路径上的 fence 最多等待一秒；超时后交换链会原样
+  放行该帧，而不是把游戏的渲染线程就此停住。
+- **GUI 的数值字段是滑块加文本输入。** 每个整数与浮点设置都是一个滑块，旁边配一个
+  可编辑的数值框，而不是 spinbox。
+- **游戏配置档已发布**在 [`game_profiles/`](game_profiles/) 下，按其校准所用的 GPU 分组。
+
+本 Fork 特有的环境变量：
+
+```text
+DLSSNR_ALLOW_OVERLAY=1          在 Steam 的辅助进程中保持该层启用
+```
+
 ## 功能特性
 
 - 面向原生 Linux 游戏与 Proton 游戏的 Vulkan 隐式层。
@@ -23,6 +48,7 @@ DLSS5VKLayer 是一个 Linux Vulkan 层加助手服务，它把呈现的帧转�
   - 强度、色调、结构、皮肤结构与锐度
   - 逐 Pass 覆盖
   - 合成运动矢量的启用、缩放模式与质量
+  - 保存与载入具名的设置配置档
   - 导入 NVIDIA NGX DLL（齿轮菜单 -> **NGX binaries**）
 - CLI 助手管理器：
   - 运行器发现
@@ -226,7 +252,8 @@ VKLayer_DLSS5=1 %command%
 
 除非存在 `VKLayer_DLSS5=1`，否则该层处于禁用状态。
 
-该层的设计目标是与 Steam 覆盖层共存。如果游戏在创建 Vulkan 设备时崩溃，请确认你使用的是 `0.2.1-3` 或更新版本。
+该层的设计目标是与 Steam 覆盖层共存。在 Steam 自己的辅助进程中它会主动让开，而不是
+替它们呈现 —— 参见[关于此 Fork](#关于此-fork)。如果游戏在创建 Vulkan 设备时崩溃，请确认你使用的是 `0.2.1-3` 或更新版本。
 
 ## 游戏配置档
 
@@ -355,6 +382,9 @@ $XDG_STATE_HOME/dlssnr/helper.log
 
 Vulkan 头文件已内置，因此不需要 Vulkan 开发包。
 
+构建不需要任何 NVIDIA 二进制文件。顶层的 `dlssnr/` 目录 —— 助手所指向的 NGX DLL
+与 OptiScaler 投放 —— 是按机器导入的，因此被 gitignore 排除；它绝不能被提交。
+
 用 Clang 构建全部内容：
 
 ```bash
@@ -399,8 +429,9 @@ build/native/test_gui/binder_test                 GUI binder regression test
 dlssnr-gui
 ```
 
-每个设置都是滚动列表中的一行，并按它作用的对象分组。模型自身的配置档位于
-**Model** 下，名为 `Style`：
+每个设置都是滚动列表中的一行，并按它作用的对象分组。数值设置是一个滑块，旁边配一个
+可编辑的数值框：拖动滑块可以得到近似值，或直接在框中键入精确值并回车，两者保持同步。
+模型自身的配置档位于 **Model** 下，名为 `Style`：
 
 ```text
 Default     maps to DLSSNR.Style 0
@@ -415,6 +446,12 @@ Estimate motion vectors   on by default
 Motion quality            Fast, Balanced (default), Quality
 Motion units              Normalised, Pixels (default), UV 0..1
 ```
+
+列表上方的配置档下拉框保存着已存的配置档。**Save** 会按它询问的名称写入当前设置，
+该名称已预填为所选配置档的名称；条目旁的 **✕** 用于删除。配置档是
+`~/.config/dlssnr/profiles/` 下的普通 `.ini` 文件，而下拉框只在启动时填充一次，
+因此在 GUI 运行时复制进去的文件，要重启后才会出现。现成的配置档参见
+[游戏配置档](#游戏配置档)。
 
 Passes 对话框一次覆盖一个 Pass 的设置，逐字段进行：每一行都有自己的
 复选框，未勾选的字段会沿用全局值，而不是重新声明它。
@@ -608,6 +645,30 @@ rm -f "/tmp/dlssnr-$UID/shm.bin"
 
 如果某个 Steam 游戏在 `steamoverlayvulkanlayer.so` 中崩溃，请更新到 `0.2.1-3` 或更新版本。
 
+如果该层记录了它正在让开，那是 Steam 自己的进程而不是游戏，属于预期现象：
+
+```text
+[dlssnr-layer] [layer] standing aside: this is gameoverlayui, not the game
+```
+
+如果该层记录了某一帧没有提交到正在呈现的队列，说明那一帧的工作发往了另一个队列，
+因此无法在这里排在捕获副本之后，于是被原样放行：
+
+```text
+[dlssnr-layer] [layer] frame was not submitted to this queue; passing it through rather than taking the application's wait semaphores
+```
+
+如果游戏停在渲染线程上，随后报告看门狗崩溃，同时该层记录了某个 fence 始终没有落地，
+说明呈现路径放弃了这一帧，而不是永远等待它：
+
+```text
+[dlssnr-layer] [layer] leg2 fence still pending after 1000 ms; swapchain passes through
+[dlssnr-layer] [layer] present fence still pending after 1000 ms; swapchain passes through
+```
+
+该帧会原样呈现 —— 无论如何应用程序都会拿回自己的等待信号量 —— 因此游戏会继续运行；
+只是这一帧没有经过神经渲染。
+
 如果某个 Steam/Proton 游戏在助手正等待帧的时候记录 `no answer ... (helper not running)`，
 说明它和助手处于不同的映射上 —— 参见 [Steam / Proton
 容器](#steam--proton-容器)。
@@ -629,5 +690,8 @@ rm -f "/tmp/dlssnr-$UID/shm.bin"
   描述符接管被阻止 —— 都会回退到
   宿主传输路径，再回退到普通的暂存拷贝，因此帧总能以某种方式跨越过去。
 - 该层目前假定了一种在已测试的游戏和模拟器上可用的呈现时交换链布局。部分游戏可能需要额外的布局处理工作。
+- 呈现路径不会消耗应用程序的等待信号量；它们会在 present 时原样交还。捕获副本通过队列
+  顺序排在应用程序自身提交之后，而且只有在那次提交正是发往正在呈现的队列时才成立 ——
+  否则该帧会原样放行。
 - Steam 运行时的问题可能需要针对单个游戏或单个运行时进行调试。
 - 除非你确定可以再分发捆绑的 NVIDIA 二进制，否则不要公开使用个人版软件包。

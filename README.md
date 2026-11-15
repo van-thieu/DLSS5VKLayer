@@ -6,6 +6,34 @@ DLSS5VKLayer is a Linux Vulkan layer plus helper service that forwards presented
 
 This project is experimental. It is intended for local testing and research.
 
+## This Fork
+
+This repository is a fork of [bmitch87/DLSS5VKLayer](https://github.com/bmitch87/DLSS5VKLayer),
+with upstream tracked at the `0.3.2-1` tag. It carries local changes on top of that base, and the
+rest of this README describes the fork rather than upstream.
+
+- **The present path no longer takes the application's wait semaphores.** The capture copy is
+  ordered behind the application's own submit by queue order instead, which consumes nothing, and
+  the application's semaphores go back to it unchanged. Taking them starved the other consumers of
+  the present path -- Steam's overlay, and the frame generation that sits in the same chain when
+  the game has it enabled -- and a wait that never completes is a frame that never arrives.
+- **Steam's auxiliary processes are left alone.** The layer stands aside in `gameoverlayui`,
+  `steamoverlayrenderer`, `steamwebhelper`, `steamerrorreporter` and `steamfossilize`, where
+  nothing needs neural rendering. Set `DLSSNR_ALLOW_OVERLAY=1` for the old behaviour.
+- **The present path's waits are bounded.** A fence on the present path is given one second; on
+  timeout the swapchain passes the frame through untouched instead of parking the game's render
+  thread for the rest of the session.
+- **GUI numeric fields are a slider plus a text input.** Every integer and float setting is a
+  slider with an editable number beside it, rather than a spinbox.
+- **Game profiles are published** under [`game_profiles/`](game_profiles/), grouped by the GPU they
+  were calibrated on.
+
+Fork-specific environment controls:
+
+```text
+DLSSNR_ALLOW_OVERLAY=1          keep the layer active in Steam's auxiliary processes
+```
+
 ## Features
 
 - Vulkan implicit layer for native Linux games and Proton games.
@@ -23,6 +51,7 @@ This project is experimental. It is intended for local testing and research.
   - intensity, tone, structure, skin structure, and sharpness
   - per-pass overrides
   - synthetic motion-vector enable, scale mode, and quality
+  - saving and loading named setting profiles
   - importing the NVIDIA NGX DLLs (gear menu -> **NGX binaries**)
 - CLI helper manager:
   - runner discovery
@@ -226,7 +255,9 @@ VKLayer_DLSS5=1 %command%
 
 The layer is disabled unless `VKLayer_DLSS5=1` is present.
 
-The layer is intended to coexist with the Steam overlay. If a game crashes during Vulkan device creation, make sure you are using `0.2.1-3` or newer.
+The layer is intended to coexist with the Steam overlay. In Steam's own auxiliary processes it
+stands aside rather than presenting through them -- see [This Fork](#this-fork). If a game crashes
+during Vulkan device creation, make sure you are using `0.2.1-3` or newer.
 
 ## Game Profiles
 
@@ -358,6 +389,10 @@ Install build dependencies:
 
 Vulkan headers are vendored, so no Vulkan devel package is needed.
 
+The build does not need any NVIDIA binary. A top-level `dlssnr/` directory -- the NGX DLLs and the
+OptiScaler drop the helper is pointed at -- is imported per machine and is gitignored for that
+reason; it must never be committed.
+
 Build everything with Clang:
 
 ```bash
@@ -402,8 +437,10 @@ Start the GUI with:
 dlssnr-gui
 ```
 
-Every setting is a row in the scrolling list, grouped by what it acts on. The model's own profile is
-under **Model**, as `Style`:
+Every setting is a row in the scrolling list, grouped by what it acts on. Numeric settings are a
+slider with an editable number beside it: drag the slider to approximate the value, or type an
+exact one into the box and press Enter. The two stay in step. The model's own profile is under
+**Model**, as `Style`:
 
 ```text
 Default     maps to DLSSNR.Style 0
@@ -418,6 +455,12 @@ Estimate motion vectors   on by default
 Motion quality            Fast, Balanced (default), Quality
 Motion units              Normalised, Pixels (default), UV 0..1
 ```
+
+The profile dropdown above the list holds saved profiles. **Save** writes the current settings under
+the name it asks for, pre-filled with the selected profile's name; the **✕** beside an entry
+deletes it. Profiles live in `~/.config/dlssnr/profiles/` as plain `.ini` files, and the dropdown is
+filled once at startup, so a file copied in while the GUI is running appears only after a restart.
+See [Game Profiles](#game-profiles) for ready-made ones.
 
 The Passes dialog overrides settings for one pass at a time, field by field: each row has its own
 checkbox, and a field left unchecked follows the global value rather than restating it.
@@ -611,6 +654,32 @@ rm -f "/tmp/dlssnr-$UID/shm.bin"
 
 If a Steam game crashes in `steamoverlayvulkanlayer.so`, update to `0.2.1-3` or newer.
 
+If the layer logs that it is standing aside, that is Steam's own process rather than the game, and
+it is expected:
+
+```text
+[dlssnr-layer] [layer] standing aside: this is gameoverlayui, not the game
+```
+
+If the layer logs that the frame was not submitted to the queue being presented, that frame's work
+went to a different queue, so it cannot be ordered behind the capture copy here and is passed
+through untouched:
+
+```text
+[dlssnr-layer] [layer] frame was not submitted to this queue; passing it through rather than taking the application's wait semaphores
+```
+
+If the game stops on its render thread and then reports a watchdog crash, with the layer logging a
+fence that never landed, the present path gave the frame up rather than waiting on it forever:
+
+```text
+[dlssnr-layer] [layer] leg2 fence still pending after 1000 ms; swapchain passes through
+[dlssnr-layer] [layer] present fence still pending after 1000 ms; swapchain passes through
+```
+
+The frame is presented untouched -- the application keeps its wait semaphores either way -- so the
+game keeps running; that frame is simply not neural-rendered.
+
 If a Steam/Proton game logs `no answer ... (helper not running)` while the helper is waiting for
 frames, it is on a different mapping than the helper -- see [Steam / Proton
 Containers](#steam--proton-containers).
@@ -632,5 +701,9 @@ yourself and log out and back in.
   a blocked descriptor adoption -- falls back to the
   host-transport path, and then to plain staging copies, so the frame always crosses somehow.
 - The layer currently assumes a present-time swapchain layout that works for the tested games and emulators. Some games may need layout handling work.
+- The present path does not consume the application's wait semaphores; they are handed back on the
+  present unchanged. The capture copy is ordered behind the application's own submit by queue
+  order, and only when that submit went to the queue being presented -- otherwise the frame is
+  passed through untouched.
 - Steam runtime issues may require per-game or per-runtime debugging.
 - Do not use the personal package publicly unless you are certain you may redistribute the bundled NVIDIA binaries.
