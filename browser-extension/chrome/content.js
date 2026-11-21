@@ -99,6 +99,8 @@
     return {
       visible: document.visibilityState === 'visible',
       playing,
+      paused: !!(v && v.paused),
+      hasVideo: !!v,
       rect,
       intrinsic,
       swapW: Math.round(outerWidth * (window.devicePixelRatio || 1) * (visualViewport.scale || 1)),
@@ -108,6 +110,7 @@
   };
 
   let autoEnabled = true;
+  let autoProfileEnabled = true;
   let nrOn = true;
   // Off by default: Chrome's GPU process usually recovers on its own, and auto-restarting the whole
   // browser on a transient stale PID is more disruptive than the symptom.
@@ -153,6 +156,9 @@
         <span class="dlss5-toggle" id="dlss5-nr-toggle" role="switch" tabindex="0"><i></i></span></div>
       <div class="dlss5-row"><span class="dlss5-label">Auto NR (playing video)</span>
         <span class="dlss5-toggle" id="dlss5-auto" role="switch" tabindex="0"><i></i></span></div>
+      <div class="dlss5-row"><span class="dlss5-label">Auto profile by site</span>
+        <span class="dlss5-toggle" id="dlss5-auto-profile" role="switch" tabindex="0"><i></i></span></div>
+      <div id="dlss5-auto-profile-note" class="dlss5-note"></div>
       <div class="dlss5-row"><span class="dlss5-label">Helper <small id="dlss5-helper-status">checking…</small></span>
         <span class="dlss5-toggle" id="dlss5-helper-toggle" role="switch" tabindex="0"><i></i></span>
         <button class="dlss5-icon" id="dlss5-helper-restart" title="Restart helper">⟳</button></div>
@@ -187,6 +193,8 @@
   let userHidden = false;
   let manualPinned = false;
   let lastPlayingMs = 0;
+  let pausedHold = false;
+  let compareActive = false;
 
   const attachPanel = (manual) => {
     if (manual) manualPinned = true;
@@ -451,7 +459,10 @@
     if (!name) return;
     const r = await send({ cmd: 'profiles.load', name });
     setStatus(r && r.ok ? `Loaded profile ${name}.` : `Load failed: ${r && r.error || 'unknown'}`, !(r && r.ok));
-    if (r && r.ok) refreshSettings();
+    if (r && r.ok) {
+      refreshSettings();
+      send({ cmd: 'profile_manual', name, url: location.href });
+    }
   };
   if (profileList) profileList.addEventListener('change', () => loadProfile(selectedProfile()));
   $('dlss5-profile-save').onclick = async () => {
@@ -459,6 +470,7 @@
     if (!name) return;
     const r = await send({ cmd: 'profiles.save', name });
     setStatus(r && r.ok ? `Saved profile ${name}.` : `Save failed: ${r && r.error || 'unknown'}`, !(r && r.ok));
+    if (r && r.ok) send({ cmd: 'profile_manual', name, url: location.href });
     refreshProfiles();
   };
   $('dlss5-profile-rename').onclick = async () => {
@@ -468,6 +480,7 @@
     if (!name) return;
     const r = await send({ cmd: 'profiles.rename', name: cur, newName: name });
     setStatus(r && r.ok ? `Renamed to ${name}.` : `Rename failed: ${r && r.error || 'unknown'}`, !(r && r.ok));
+    if (r && r.ok) send({ cmd: 'profile_renamed', oldName: cur, newName: name });
     refreshProfiles();
   };
   $('dlss5-profile-remove').onclick = async () => {
@@ -476,6 +489,7 @@
     if (!await askConfirm('Delete profile', `Remove "${cur}"?`)) return;
     const r = await send({ cmd: 'profiles.remove', name: cur });
     setStatus(r && r.ok ? `Removed ${cur}.` : `Delete failed: ${r && r.error || 'unknown'}`, !(r && r.ok));
+    if (r && r.ok) send({ cmd: 'profile_removed', name: cur });
     refreshProfiles();
   };
 
@@ -487,6 +501,12 @@
       setStatus(r && r.ok ? `Neural rendering ${v ? 'on' : 'off'}.` : 'Failed to toggle NR.', !(r && r.ok));
     });
     reportState(true);
+  });
+  bindToggle('dlss5-auto-profile', () => autoProfileEnabled, (v) => {
+    autoProfileEnabled = v;
+    send({ cmd: 'auto_profile_set', enabled: v }).then((r) => {
+      setStatus(r && r.ok ? `Auto profile ${v ? 'on' : 'off'}.` : 'Failed to set auto profile.', !(r && r.ok));
+    });
   });
   bindToggle('dlss5-auto', () => autoEnabled, (v) => {
     autoEnabled = v;
@@ -561,6 +581,7 @@
     const s = await send({ cmd: 'settings' });
     if (s && s.ok && s.settings) {
       for (const [k, v] of Object.entries(s.settings)) setControlValue(k, v);
+      if (s.settings.compare != null) compareActive = Number(s.settings.compare) !== 0;
     }
   }
 
@@ -601,10 +622,26 @@
     const sig = videoSig();
     lastVideoSig = sig;
     const s = videoState();
+    // Compare mode wants a stable picture while paused: freeze the last frame and keep the panel.
+    if (s.visible && s.hasVideo && s.paused && compareActive && !pausedHold) {
+      pausedHold = true;
+      lastPlayingMs = Date.now();
+      if (!panelAttached) attachPanel(false);
+      send({ cmd: 'set', key: 'hold', value: 1 });
+      send({ cmd: 'set', key: 'enabled', value: 1 });
+      send({ cmd: 'pause_hold', active: true });
+    } else if (pausedHold && (s.playing || !s.hasVideo || !compareActive)) {
+      pausedHold = false;
+      send({ cmd: 'set', key: 'hold', value: 0 });
+      send({ cmd: 'pause_hold', active: false });
+    }
+
     // Only create an overlay once a real video is actually playing in this visible tab.
     if (s.visible && s.playing && !userHidden) {
       lastPlayingMs = Date.now();
       if (!panelAttached) attachPanel(false);
+    } else if (pausedHold) {
+      lastPlayingMs = Date.now();
     } else if (panelAttached && !manualPinned && Date.now() - lastPlayingMs > 3000) {
       detachPanel();
     }
@@ -627,6 +664,15 @@
         : 'Enhanced only while a visible tab has playing video when Auto NR is on.';
     }
     await refreshSettings();
+    const ap = await send({ cmd: 'auto_profile_get' });
+    if (ap && ap.ok) {
+      autoProfileEnabled = !!ap.enabled;
+      setToggle($('dlss5-auto-profile'), autoProfileEnabled);
+      const note = panel.querySelector('#dlss5-auto-profile-note');
+      if (note) note.textContent = ap.profile
+        ? `Auto: ${ap.profile} for ${ap.host || 'this site'}`
+        : (ap.enabled ? `Auto on for ${ap.host || 'this site'} — no matching profile` : 'Auto profile off');
+    }
     const cfg = await send({ cmd: 'settings' });
     if (cfg && cfg.ok && cfg.settings && cfg.settings.enabled != null) {
       nrOn = Number(cfg.settings.enabled) !== 0;

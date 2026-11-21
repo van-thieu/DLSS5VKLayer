@@ -9,6 +9,7 @@ let manualUntil = 0;
 let lastDesired = null;
 let offSince = 0;                // debounce: video can briefly report paused while buffering/scrolling
 const OFF_DELAY_MS = 6000;
+let pauseHold = false;           // compare mode keeps the last frame frozen while the video is paused
 
 // Auto-profile-by-site: remember a profile per hostname and apply it when that site's video starts.
 let autoProfileEnabled = true;
@@ -110,6 +111,7 @@ function requestToNative(msg) {
 }
 
 function applyGating() {
+  if (pauseHold) return;          // frozen frame: do not turn the pass off
   if (Date.now() < manualUntil) return;
   const now = Date.now();
   const anyAuto = [...reports.values()].some(r => r.auto && now - r.ts < 8000);
@@ -185,6 +187,19 @@ chrome.runtime.onInstalled.addListener(() => reinjectAll());
 chrome.runtime.onStartup.addListener(() => reinjectAll());
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg && msg.cmd === 'pause_hold') {
+    const was = pauseHold;
+    pauseHold = !!msg.active;
+    if (pauseHold) {
+      offSince = 0; lastDesired = 1;
+      requestToNative({ cmd: 'set', key: 'enabled', value: 1 }).catch(() => {});
+    } else if (was) {
+      offSince = 0;
+      applyGating();
+    }
+    sendResponse({ ok: true, active: pauseHold });
+    return false;
+  }
   if (msg && msg.cmd === 'auto_profile_get') {
     const active = visibleReport();
     const host = active ? hostOf(active.url) : '';

@@ -99,6 +99,8 @@
     return {
       visible: document.visibilityState === 'visible',
       playing,
+      paused: !!(v && v.paused),
+      hasVideo: !!v,
       rect,
       intrinsic,
       swapW: Math.round(outerWidth * (window.devicePixelRatio || 1) * (visualViewport.scale || 1)),
@@ -191,6 +193,8 @@
   let userHidden = false;
   let manualPinned = false;
   let lastPlayingMs = 0;
+  let pausedHold = false;
+  let compareActive = false;
 
   const attachPanel = (manual) => {
     if (manual) manualPinned = true;
@@ -577,6 +581,7 @@
     const s = await send({ cmd: 'settings' });
     if (s && s.ok && s.settings) {
       for (const [k, v] of Object.entries(s.settings)) setControlValue(k, v);
+      if (s.settings.compare != null) compareActive = Number(s.settings.compare) !== 0;
     }
   }
 
@@ -617,10 +622,26 @@
     const sig = videoSig();
     lastVideoSig = sig;
     const s = videoState();
+    // Compare mode wants a stable picture while paused: freeze the last frame and keep the panel.
+    if (s.visible && s.hasVideo && s.paused && compareActive && !pausedHold) {
+      pausedHold = true;
+      lastPlayingMs = Date.now();
+      if (!panelAttached) attachPanel(false);
+      send({ cmd: 'set', key: 'hold', value: 1 });
+      send({ cmd: 'set', key: 'enabled', value: 1 });
+      send({ cmd: 'pause_hold', active: true });
+    } else if (pausedHold && (s.playing || !s.hasVideo || !compareActive)) {
+      pausedHold = false;
+      send({ cmd: 'set', key: 'hold', value: 0 });
+      send({ cmd: 'pause_hold', active: false });
+    }
+
     // Only create an overlay once a real video is actually playing in this visible tab.
     if (s.visible && s.playing && !userHidden) {
       lastPlayingMs = Date.now();
       if (!panelAttached) attachPanel(false);
+    } else if (pausedHold) {
+      lastPlayingMs = Date.now();
     } else if (panelAttached && !manualPinned && Date.now() - lastPlayingMs > 3000) {
       detachPanel();
     }

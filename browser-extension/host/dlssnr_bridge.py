@@ -49,7 +49,7 @@ PROFILE_KEYS = {
     "debugview": "set_debug_view", "debugscale": "set_debug_scale",
     "compare": "set_compare", "comparesplit": "set_compare_split",
     "comparezoom": "set_compare_zoom", "compareswap": "set_compare_swap",
-    "togglekey": "set_toggle_key",
+    "togglekey": "set_toggle_key", "hold": "set_hold",
 }
 KEY_TO_SHM = {v: k for k, v in PROFILE_KEYS.items()}
 
