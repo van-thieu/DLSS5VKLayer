@@ -64,7 +64,16 @@
       const left = Math.max(0, r.left + ox);
       const top = Math.max(0, r.top + oy);
       const right = Math.min(visW, left + cw);
-      const bottom = Math.min(visH, top + ch);
+      let bottom = Math.min(visH, top + ch);
+      // TikTok (and similar players) draw their progress/control bar INSIDE the <video> box. The
+      // layer sees the composited result, so enhancing the whole element also enhances that UI.
+      // Cut the ROI above the first progress/control bar in the lower half of the video.
+      const uiTop = [...document.querySelectorAll('div,span')]
+        .filter(e => /progress|seek|control/i.test((e.className || '').toString()) && e.getBoundingClientRect().height > 0)
+        .map(e => e.getBoundingClientRect())
+        .filter(b => b.top > r.top + r.height * 0.5 && b.top < r.bottom && b.left <= r.right && b.right >= r.left)
+        .reduce((m, b) => Math.min(m, b.top), Infinity);
+      if (uiTop < bottom) bottom = uiTop;
       // Floor the origin and ceil the far edge: getBoundingClientRect can be fractional, and
       // rounding both ends leaves a one-pixel un-enhanced outline at the top/right of the video.
       const x0 = Math.floor((chromeLeft + left) * factor);
