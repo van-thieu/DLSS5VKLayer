@@ -2,6 +2,9 @@
 // from the active visible tab and profile management using the desktop GUI's INI format.
 (() => {
   if (window.__dlss5Panel) return;
+  // A stale panel from an extension reload can still be in the DOM. Remove it before re-injecting.
+  const stale = document.querySelector('#dlss5-panel');
+  if (stale) stale.remove();
   window.__dlss5Panel = true;
 
   const send = (msg) => new Promise((resolve) => {

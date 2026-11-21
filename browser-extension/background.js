@@ -88,6 +88,22 @@ chrome.commands.onCommand.addListener(async (command) => {
   } catch (e) { /* no page / chrome:// */ }
 });
 
+// After an extension reload, existing tabs keep a stale content script. Re-inject into all pages
+// so the panel reconnects without the user refreshing each tab manually.
+async function reinjectAll() {
+  try {
+    const tabs = await chrome.tabs.query({});
+    for (const t of tabs) {
+      if (!t.id || !/^https?:/.test(t.url || '')) continue;
+      try {
+        await chrome.scripting.executeScript({ target: { tabId: t.id }, files: ['content.js'] });
+      } catch (e) { /* page not injectable */ }
+    }
+  } catch (e) { /* tabs API unavailable */ }
+}
+chrome.runtime.onInstalled.addListener(() => reinjectAll());
+chrome.runtime.onStartup.addListener(() => reinjectAll());
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg && msg.cmd === 'tab_report') {
     const id = sender.tab && sender.tab.id;
