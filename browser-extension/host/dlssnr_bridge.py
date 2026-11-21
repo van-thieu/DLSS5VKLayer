@@ -216,8 +216,7 @@ def handle(msg):
     if cmd == "set":
         key = str(msg.get("key", ""))
         value = msg.get("value")
-        if key not in {"style", "intensity", "applymodel", "compare", "comparesplit",
-                       "workingscale", "passes", "mvec", "enabled"}:
+        if key not in PROFILE_KEYS:
             return {"ok": False, "error": f"unknown key {key}"}
         if key == "enabled" and int(value) == 1:
             try:
