@@ -27,6 +27,11 @@ function activeReport() {
   const now = Date.now();
   return [...reports.values()].find(r => r.auto && r.visible && r.playing && now - r.ts < 8000) || null;
 }
+function visibleReport() {
+  const now = Date.now();
+  const fresh = [...reports.values()].filter(r => r.auto && r.visible && now - r.ts < 8000);
+  return fresh.find(r => r.playing) || fresh[0] || null;
+}
 async function getProfiles() {
   if (profilesCache) return profilesCache;
   const r = await requestToNative({ cmd: 'profiles.list' });
@@ -60,7 +65,7 @@ if (chrome.storage && chrome.storage.local) {
 
 async function applyAutoProfile() {
   if (!autoProfileEnabled) return;
-  const active = activeReport();
+  const active = visibleReport();
   if (!active) return;
   const host = hostOf(active.url);
   if (!host || lastAutoHost === host) return;
@@ -181,7 +186,7 @@ chrome.runtime.onStartup.addListener(() => reinjectAll());
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg && msg.cmd === 'auto_profile_get') {
-    const active = activeReport();
+    const active = visibleReport();
     const host = active ? hostOf(active.url) : '';
     sendResponse({ ok: true, enabled: autoProfileEnabled, host,
                    profile: (host && siteProfiles[host]) || lastAutoProfile || '' });

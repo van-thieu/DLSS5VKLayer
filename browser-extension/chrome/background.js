@@ -10,6 +10,73 @@ let lastDesired = null;
 let offSince = 0;                // debounce: video can briefly report paused while buffering/scrolling
 const OFF_DELAY_MS = 6000;
 
+// Auto-profile-by-site: remember a profile per hostname and apply it when that site's video starts.
+let autoProfileEnabled = true;
+let siteProfiles = {};           // host -> profile name
+let lastAutoHost = '';
+let lastAutoProfile = '';
+let profilesCache = null;
+const HOST_NOISE = new Set(['www', 'com', 'co', 'net', 'org', 'tv', 'cn', 'ca', 'io', 'app', 'm']);
+
+const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+function hostOf(url) {
+  try { return new URL(url || '').hostname.toLowerCase().replace(/^www\./, ''); }
+  catch (e) { return ''; }
+}
+function activeReport() {
+  const now = Date.now();
+  return [...reports.values()].find(r => r.auto && r.visible && r.playing && now - r.ts < 8000) || null;
+}
+function visibleReport() {
+  const now = Date.now();
+  const fresh = [...reports.values()].filter(r => r.auto && r.visible && now - r.ts < 8000);
+  return fresh.find(r => r.playing) || fresh[0] || null;
+}
+async function getProfiles() {
+  if (profilesCache) return profilesCache;
+  const r = await requestToNative({ cmd: 'profiles.list' });
+  if (r && r.ok) profilesCache = r.profiles || [];
+  return profilesCache || [];
+}
+function inferProfile(host, profiles) {
+  if (!host) return '';
+  const tokens = host.split('.').filter(t => t && !HOST_NOISE.has(t));
+  const full = tokens.join('');
+  for (const p of profiles) {
+    const n = norm(p);
+    if (!n) continue;
+    if (full.includes(n) || n.includes(full)) return p;
+    for (const t of tokens) {
+      if (t.length >= 3 && (n.includes(t) || t.includes(n))) return p;
+    }
+  }
+  return '';
+}
+function saveAutoSettings() {
+  if (chrome.storage && chrome.storage.local)
+    chrome.storage.local.set({ autoProfileEnabled, siteProfiles });
+}
+if (chrome.storage && chrome.storage.local) {
+  chrome.storage.local.get(['autoProfileEnabled', 'siteProfiles'], (d) => {
+    if (d && typeof d.autoProfileEnabled === 'boolean') autoProfileEnabled = d.autoProfileEnabled;
+    if (d && d.siteProfiles && typeof d.siteProfiles === 'object') siteProfiles = d.siteProfiles;
+  });
+}
+
+async function applyAutoProfile() {
+  if (!autoProfileEnabled) return;
+  const active = visibleReport();
+  if (!active) return;
+  const host = hostOf(active.url);
+  if (!host || lastAutoHost === host) return;
+  lastAutoHost = host;
+  const profiles = await getProfiles();
+  const name = siteProfiles[host] || inferProfile(host, profiles);
+  if (!name) { lastAutoProfile = ''; return; }
+  const r = await requestToNative({ cmd: 'profiles.load', name });
+  if (r && r.ok) lastAutoProfile = name;
+}
+
 function connect() {
   port = chrome.runtime.connectNative('com.dlssnr.bridge');
   port.onDisconnect.addListener(() => {
@@ -118,6 +185,53 @@ chrome.runtime.onInstalled.addListener(() => reinjectAll());
 chrome.runtime.onStartup.addListener(() => reinjectAll());
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg && msg.cmd === 'auto_profile_get') {
+    const active = visibleReport();
+    const host = active ? hostOf(active.url) : '';
+    sendResponse({ ok: true, enabled: autoProfileEnabled, host,
+                   profile: (host && siteProfiles[host]) || lastAutoProfile || '' });
+    return false;
+  }
+  if (msg && msg.cmd === 'auto_profile_set') {
+    autoProfileEnabled = !!msg.enabled;
+    saveAutoSettings();
+    if (autoProfileEnabled) { lastAutoHost = ''; applyAutoProfile(); }
+    sendResponse({ ok: true, enabled: autoProfileEnabled });
+    return false;
+  }
+  if (msg && msg.cmd === 'profile_manual') {
+    const host = hostOf(msg.url);
+    if (host && msg.name) {
+      siteProfiles[host] = msg.name;
+      lastAutoHost = host;
+      lastAutoProfile = msg.name;
+      saveAutoSettings();
+    }
+    sendResponse({ ok: true, host });
+    return false;
+  }
+  if (msg && msg.cmd === 'profile_renamed') {
+    for (const h of Object.keys(siteProfiles))
+      if (siteProfiles[h] === msg.oldName) siteProfiles[h] = msg.newName;
+    if (lastAutoProfile === msg.oldName) lastAutoProfile = msg.newName;
+    profilesCache = null;
+    saveAutoSettings();
+    sendResponse({ ok: true });
+    return false;
+  }
+  if (msg && msg.cmd === 'profile_removed') {
+    for (const h of Object.keys(siteProfiles))
+      if (siteProfiles[h] === msg.name) delete siteProfiles[h];
+    if (lastAutoProfile === msg.name) lastAutoProfile = '';
+    profilesCache = null;
+    saveAutoSettings();
+    sendResponse({ ok: true });
+    return false;
+  }
+  if (msg && msg.cmd === 'profiles.save') {
+    profilesCache = null;
+    // Let requestToNative handle it, but invalidate our cache first.
+  }
   if (msg && msg.cmd === 'tab_report') {
     const id = sender.tab && sender.tab.id;
     if (id != null) {
@@ -133,6 +247,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       });
       if (msg.manual) manualUntil = Date.now() + 30000;
       applyGating();
+      applyAutoProfile();
     }
     sendResponse({ ok: true });
     return false;
@@ -145,4 +260,4 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   reports.delete(tabId);
   applyGating();
 });
-chrome.tabs.onActivated.addListener(() => applyGating());
+chrome.tabs.onActivated.addListener(() => { applyGating(); applyAutoProfile(); });
