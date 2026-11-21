@@ -158,6 +158,9 @@ def restart_chrome(url):
 
 def handle(msg):
     cmd = msg.get("cmd", "")
+    with open("/tmp/dlssnr-bridge.log", "a") as _log:
+        _log.write(json.dumps({"t": round(time.time(), 2), "cmd": cmd,
+                               "key": msg.get("key"), "value": msg.get("value")}) + "\n")
     if cmd == "chrome.restart":
         ok, text = restart_chrome(msg.get("url", ""))
         return {"ok": ok, "text": text}
@@ -234,7 +237,7 @@ def handle(msg):
 
     if cmd == "roi":
         with open("/tmp/dlssnr-roi.log", "a") as _log:
-            _log.write(json.dumps(msg) + "\n")
+            _log.write(json.dumps({"t": round(time.time(), 2), **msg}) + "\n")
         rect = msg.get("rect") or {}
         try:
             x = max(0, int(rect.get("x", 0)))

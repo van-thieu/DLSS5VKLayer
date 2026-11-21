@@ -7,6 +7,8 @@ let port = null;
 const reports = new Map();       // tabId -> { visible, playing, auto, rect, ts }
 let manualUntil = 0;
 let lastDesired = null;
+let offSince = 0;                // debounce: video can briefly report paused while buffering/scrolling
+const OFF_DELAY_MS = 6000;
 
 function connect() {
   port = chrome.runtime.connectNative('com.dlssnr.bridge');
@@ -47,6 +49,14 @@ function applyGating() {
   if (!anyAuto) return;                       // no auto-enabled tab: leave manual state alone
   const active = [...reports.values()].find(r => r.auto && r.visible && r.playing && now - r.ts < 8000);
   const desired = active ? 1 : 0;
+  if (desired === 0 && lastDesired !== 0) {
+    // A video can briefly report paused/blank during a scroll transition or rebuffer. Don't let that
+    // flicker the whole pass off; require several seconds of no active video first.
+    if (!offSince) offSince = now;
+    if (now - offSince < OFF_DELAY_MS) return;
+  } else {
+    offSince = 0;   // video is playing again — re-enable immediately
+  }
   if (desired === lastDesired) {
     if (desired && active) requestToNative({ cmd: 'roi', rect: active.rect, swapW: active.swapW, swapH: active.swapH }).catch(() => {});
     return;
