@@ -388,6 +388,41 @@
 
   buildPages();
 
+  // ---------- profile bar (top-level, not inside a tab page) ----------
+  const profileList = $('dlss5-profile-list');
+  const selectedProfile = () => profileList ? profileList.value : '';
+  const loadProfile = async (name) => {
+    if (!name) return;
+    const r = await send({ cmd: 'profiles.load', name });
+    setStatus(r && r.ok ? `Loaded profile ${name}.` : `Load failed: ${r && r.error || 'unknown'}`, !(r && r.ok));
+    if (r && r.ok) refreshSettings();
+  };
+  if (profileList) profileList.addEventListener('change', () => loadProfile(selectedProfile()));
+  $('dlss5-profile-save').onclick = async () => {
+    const name = await askText('Save profile', 'Name:', selectedProfile() || 'DLSS5 Video');
+    if (!name) return;
+    const r = await send({ cmd: 'profiles.save', name });
+    setStatus(r && r.ok ? `Saved profile ${name}.` : `Save failed: ${r && r.error || 'unknown'}`, !(r && r.ok));
+    refreshProfiles();
+  };
+  $('dlss5-profile-rename').onclick = async () => {
+    const cur = selectedProfile();
+    if (!cur) return;
+    const name = await askText('Rename profile', 'New name:', cur);
+    if (!name) return;
+    const r = await send({ cmd: 'profiles.rename', name: cur, newName: name });
+    setStatus(r && r.ok ? `Renamed to ${name}.` : `Rename failed: ${r && r.error || 'unknown'}`, !(r && r.ok));
+    refreshProfiles();
+  };
+  $('dlss5-profile-remove').onclick = async () => {
+    const cur = selectedProfile();
+    if (!cur) return;
+    if (!await askConfirm('Delete profile', `Remove "${cur}"?`)) return;
+    const r = await send({ cmd: 'profiles.remove', name: cur });
+    setStatus(r && r.ok ? `Removed ${cur}.` : `Delete failed: ${r && r.error || 'unknown'}`, !(r && r.ok));
+    refreshProfiles();
+  };
+
   // ---------- toggles / actions ----------
   bindToggle('dlss5-nr-toggle', () => nrOn, (v) => {
     nrOn = v;

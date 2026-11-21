@@ -26,7 +26,7 @@ RESTART_FLAG = f"/tmp/dlssnr-video/last-restart-{UID}"
 CHROME_CDP = "http://127.0.0.1:9222/json/version"
 # Video profiles are deliberately separate from the desktop helper's game profiles. Removing or
 # renaming a profile from the browser must never touch a game profile.
-PROFILE_DIR = os.path.expanduser("~/.config/dlssnr/video-profiles")
+PROFILE_DIR = os.path.expanduser("~/.config/dlssnr-video/dlssnr/profiles")
 
 # shmctl setting name -> the set_* key used by dlssnr_gui profile files.
 PROFILE_KEYS = {
