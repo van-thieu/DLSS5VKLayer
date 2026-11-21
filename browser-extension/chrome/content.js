@@ -69,8 +69,10 @@
       // rounding both ends leaves a one-pixel un-enhanced outline at the top/right of the video.
       const x0 = Math.floor((chromeLeft + left) * factor);
       const y0 = Math.floor((chromeTop + top) * factor);
-      const x1 = Math.ceil((chromeLeft + right) * factor);
-      const y1 = Math.ceil((chromeTop + bottom) * factor);
+      // One extra device pixel on the far edges: Chrome's present path rounds the visible frame by
+      // a pixel, and without this the last column/row of the video is left un-enhanced (bright line).
+      const x1 = Math.ceil((chromeLeft + right) * factor) + 1;
+      const y1 = Math.ceil((chromeTop + bottom) * factor) + 1;
       rect = { x: x0, y: y0, w: Math.max(0, x1 - x0), h: Math.max(0, y1 - y0) };
       intrinsic = { w: vw, h: vh, fit };
     }
