@@ -21,6 +21,7 @@ class QLineEdit;
 class QFormLayout;
 class QAction;
 class ShmBinder;
+class VideoPage;
 
 class ProfileDelegate : public QStyledItemDelegate {
 public:
@@ -34,8 +35,11 @@ private:
 class MainWindow : public QWidget {
     Q_OBJECT
 public:
-    explicit MainWindow(QWidget* parent = nullptr);
+    explicit MainWindow(bool videoMode = false, QWidget* parent = nullptr);
     ~MainWindow() override;
+
+    // The Video tab's public entry point, used by --video <url>.
+    void playVideo(const QString& source);
 
 protected:
     void closeEvent(QCloseEvent* event) override;
@@ -113,6 +117,7 @@ private:
     QLineEdit* runnerPathEdit = nullptr;
     QAction* binariesPathAction = nullptr;
     QLabel* statusLabel = nullptr;
+    QWidget* runnerForm = nullptr;
     QWidget* captureFrames = nullptr;
     QCheckBox* bypassCheck = nullptr;
     QFormLayout* compositionForm = nullptr;
@@ -124,6 +129,8 @@ private:
     bool relaunching = false;
     quint64 lastFrames = 0;
     QWidget* rebuildSpin = nullptr;
+    VideoPage* videoPage = nullptr;
+    bool videoMode = false;
 
     ShmBinder* binder = nullptr;
     QString lastSettingsBlob;

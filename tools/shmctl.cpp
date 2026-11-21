@@ -79,6 +79,13 @@ const Setting kSettings[] = {
     { "applymodel", &ShmHeader::applyModel, false, "0 show the clean frame, 1 apply the edit" },
     { "hold", &ShmHeader::holdFrame, false, "0/1 freeze the frame the pass works on" },
     { "togglekey", &ShmHeader::toggleKey, false, "Linux KEY_ code the layer watches, 0 for none" },
+    { "roienabled", &ShmHeader::roiEnabled, false, "0/1 process only roiX/roiY/roiW/roiH" },
+    { "roix", &ShmHeader::roiX, false, "region left, in swapchain pixels" },
+    { "roiy", &ShmHeader::roiY, false, "region top, in swapchain pixels" },
+    { "roiw", &ShmHeader::roiW, false, "region width" },
+    { "roih", &ShmHeader::roiH, false, "region height" },
+    { "roiswapw", &ShmHeader::roiSwapW, false, "swapchain width the ROI was computed for" },
+    { "roiswaph", &ShmHeader::roiSwapH, false, "swapchain height the ROI was computed for" },
 };
 
 void Usage() {

@@ -25,6 +25,7 @@
 
 #include "../../common/shm_protocol.h"
 
+#include <algorithm>
 #include <memory>
 #include <string>
 
@@ -59,6 +60,14 @@ struct FrameSettings {
     // 1: present the model's raw answer as the frame -- no blend, no guard, no compare.
     uint32_t compositionBypass = 0;
 
+    // Active-video region from the browser extension. The layer captures/models/composes only this
+    // rect when roiEnabled is set.
+    uint32_t roiEnabled = 0;
+    uint32_t roiX = 0;
+    uint32_t roiY = 0;
+    uint32_t roiW = 0;
+    uint32_t roiH = 0;
+
     // How much of the way toward a newly arrived answer the running pair moves each frame, 0..1.
 
     float ghostSlack = 0.5f;
@@ -77,6 +86,26 @@ struct FrameSettings {
 
     static FrameSettings Read(const ShmHeader* h);
 };
+
+// The raster the pass actually works on. With an active-video ROI it is the clamped rectangle;
+// otherwise the whole swapchain. Kept outside Composition so the layer can size the transport the
+// same way before Prepare runs.
+inline void EffectiveFrameExtent(uint32_t fullW, uint32_t fullH, const FrameSettings& s,
+                                 uint32_t& w, uint32_t& h) {
+    if (!s.roiEnabled || !s.roiW || !s.roiH || fullW < 64 || fullH < 64) {
+        w = fullW;
+        h = fullH;
+        return;
+    }
+    const uint32_t x = std::min<uint32_t>(s.roiX, fullW - 1);
+    const uint32_t y = std::min<uint32_t>(s.roiY, fullH - 1);
+    w = std::min<uint32_t>(s.roiW, fullW - x);
+    h = std::min<uint32_t>(s.roiH, fullH - y);
+    if (w < 64 || h < 64) {
+        w = fullW;
+        h = fullH;
+    }
+}
 
 // Whether a swapchain format can be composed at all, and what this pass works in when it can.
 //
@@ -251,6 +280,9 @@ class Composition {
     bool FormatSupportsBlit(VkFormat format) const;
     void CopyWholeImage(VkCommandBuffer cb, VkImage src, VkImageLayout srcLayout, VkImage dst,
                         VkImageLayout dstLayout, uint32_t w, uint32_t h);
+    void CopyImageRegion(VkCommandBuffer cb, VkImage src, VkImageLayout srcLayout, VkImage dst,
+                         VkImageLayout dstLayout, uint32_t w, uint32_t h,
+                         uint32_t srcX, uint32_t srcY, uint32_t dstX, uint32_t dstY);
 
     bool FormatSupportsStorage(VkFormat format) const;
     DlssNrConstants BaseConstants(const FrameSettings& s) const;
@@ -266,6 +298,9 @@ class Composition {
     std::string _reason;
 
     uint32_t _width = 0, _height = 0;
+    uint32_t _fullWidth = 0, _fullHeight = 0;
+    uint32_t _roiX = 0, _roiY = 0;
+    bool _useRoi = false;
     uint32_t _modelW = 0, _modelH = 0;
     VkFormat _swapchainFormat = VK_FORMAT_UNDEFINED;
     VkFormat _workFormat = VK_FORMAT_UNDEFINED;  // usually the swapchain's UNORM twin; see Prepare

@@ -37,7 +37,7 @@ static constexpr uint32_t kShmMagic = 0x32524E47;
 // 64 KiB because VK_EXT_external_memory_host demands the imported pointer meet
 // minImportedHostPointerAlignment and NVIDIA answers 64 KiB, and the dma-buf exchange and HDR
 // and round-trip attribution. A stale mapping of either lineage must be re-created, not half-read.
-static constexpr uint32_t kShmVersion = 20;
+static constexpr uint32_t kShmVersion = 22;
 
 
 static constexpr uint32_t kMaxW = 7680, kMaxH = 4320;
@@ -533,6 +533,17 @@ struct ShmHeader {
     std::atomic<uint32_t> sdr16Multipass;
     std::atomic<uint32_t> mvecPixelSize;
 
+    // Region of interest, written by the browser extension for the active visible video tab.
+    // When enabled the layer captures, models and composes only this rectangle of the swapchain.
+    std::atomic<uint32_t> roiEnabled;
+    std::atomic<uint32_t> roiX;
+    std::atomic<uint32_t> roiY;
+    std::atomic<uint32_t> roiW;
+    std::atomic<uint32_t> roiH;
+    // The swapchain the ROI was computed for (the browser window, in device pixels). The layer
+    // ignores swapchains of a different size so a fixed ROI is never applied to another surface.
+    std::atomic<uint32_t> roiSwapW;
+    std::atomic<uint32_t> roiSwapH;
 };
 
 static_assert(sizeof(ShmHeader) <= kHeaderBytes, "ShmHeader outgrew its region");
@@ -548,7 +559,7 @@ static_assert(sizeof(ShmHeader) <= kHeaderBytes, "ShmHeader outgrew its region")
 // The version check already existed to prevent exactly that; what was missing was anything to make
 // someone remember to use it. If these fire, the layout changed: bump kShmVersion in the same commit,
 // then update these numbers.
-static_assert(sizeof(ShmHeader) == 1968, "the header layout changed -- bump kShmVersion");
+static_assert(sizeof(ShmHeader) == 1996, "the header layout changed -- bump kShmVersion");
 
 static_assert(offsetof(ShmHeader, enabled) == 44, "layout changed -- bump kShmVersion");
 static_assert(offsetof(ShmHeader, transferStrengthBits) == 88, "layout changed -- bump kShmVersion");
@@ -699,6 +710,7 @@ inline void ShmInitDefaults(ShmHeader* h) {
     h->applyModel.store(1);
     h->holdFrame.store(0);
     h->scalingDownscaler.store(kDownscaleLanczos3);
+    h->roiEnabled.store(0);
 
     h->hdrMode.store(kHdrAuto);
     h->hdrDetected.store(kHdrNone);
