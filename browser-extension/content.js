@@ -5,12 +5,19 @@
   window.__dlss5Panel = true;
 
   const send = (msg) => new Promise((resolve) => {
+    let done = false;
+    const finish = (v) => { if (!done) { done = true; resolve(v); } };
+    const timer = setTimeout(() => finish({ ok: false, error: 'native host timeout', timeout: true }), 4000);
     try {
       chrome.runtime.sendMessage(msg, (r) => {
-        if (chrome.runtime.lastError) { resolve({ ok: false, error: chrome.runtime.lastError.message, staleContext: true }); return; }
-        resolve(r || { ok: false });
+        clearTimeout(timer);
+        if (chrome.runtime.lastError) { finish({ ok: false, error: chrome.runtime.lastError.message, staleContext: true }); return; }
+        finish(r || { ok: false });
       });
-    } catch (e) { resolve({ ok: false, error: String(e), staleContext: /context.*invalid/i.test(String(e)) }); }
+    } catch (e) {
+      clearTimeout(timer);
+      finish({ ok: false, error: String(e), staleContext: /context.*invalid/i.test(String(e)) });
+    }
   });
 
   const biggestVideo = () => {
@@ -477,6 +484,7 @@
   };
 
   async function refresh() {
+    try {
     const sig = videoSig();
     lastVideoSig = sig;
     const s = videoState();
@@ -491,7 +499,7 @@
     if (roiNote) {
       roiNote.textContent = s.rect
         ? `Source ${s.intrinsic ? s.intrinsic.w + '×' + s.intrinsic.h + ' ' + s.intrinsic.fit : '?'} · ROI ${s.rect.x},${s.rect.y} ${s.rect.w}×${s.rect.h} (window pixels, chrome offset applied)`
-        : 'Use the tabs below to tune the same model games use. Video is enhanced only while a visible tab has playing video (Auto).';
+        : 'Enhanced only while a visible tab has playing video when Auto NR is on.';
     }
     const cfg = await send({ cmd: 'settings' });
     if (cfg && cfg.ok && cfg.settings && cfg.settings.enabled != null) {
@@ -525,6 +533,9 @@
         setStatus(on ? `NR running${attached} · ${st.layerFrames} frames · ${st.width}×${st.height}` :
                        'Helper not running — start it with the DLSS5 Helper app.', !on || !st.layerAlive);
       }
+    }
+    } catch (e) {
+      setStatus('Panel error: ' + (e && e.message || e), true);
     }
   }
   refresh();
