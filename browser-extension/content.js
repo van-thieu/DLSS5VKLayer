@@ -179,11 +179,13 @@
       <div id="dlss5-pages"></div>
     </div>`;
   document.documentElement.appendChild(panel);
-  panel.style.display = 'none';   // shown only by clicking the toolbar icon
+  panel.style.display = 'none';   // shown only by clicking the toolbar icon, or when video plays
+  let userHidden = false;         // explicit close hides it until the icon is clicked again
 
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg && msg.cmd === 'toggle_panel') {
       panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+      userHidden = panel.style.display === 'none';
       if (panel.style.display === 'block') {
         refresh();
         refreshHelper();
@@ -204,7 +206,8 @@
   };
 
   $('dlss5-close').addEventListener('click', () => {
-    panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+    panel.style.display = 'none';
+    userHidden = true;
   });
   const head = $('dlss5-head');
   let drag = null;
@@ -575,6 +578,17 @@
     const sig = videoSig();
     lastVideoSig = sig;
     const s = videoState();
+    // Show the panel as soon as video plays (unless the user explicitly closed it). This makes the
+    // controls reachable in PWA/app windows where clicking the extension button is awkward.
+    if (s.visible && s.playing && !userHidden && panel.style.display === 'none') {
+      panel.style.display = 'block';
+      refreshProfiles(); refreshHelper();
+    }
+    // In fullscreen only the fullscreen element is painted; move the panel inside it so it stays
+    // visible, then restore it to <html> when leaving fullscreen.
+    const fs = document.fullscreenElement;
+    const wantedParent = fs || document.documentElement;
+    if (panel.parentElement !== wantedParent) wantedParent.appendChild(panel);
     const probe = await send({ cmd: 'ping' });
     if (probe && probe.staleContext) { showStaleWarning(); return; }
     reportState();
