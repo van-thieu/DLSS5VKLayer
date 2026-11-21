@@ -578,6 +578,7 @@
         ? `Source ${s.intrinsic ? s.intrinsic.w + '×' + s.intrinsic.h + ' ' + s.intrinsic.fit : '?'} · ROI ${s.rect.x},${s.rect.y} ${s.rect.w}×${s.rect.h} (window pixels, chrome offset applied)`
         : 'Enhanced only while a visible tab has playing video when Auto NR is on.';
     }
+    await refreshSettings();
     const cfg = await send({ cmd: 'settings' });
     if (cfg && cfg.ok && cfg.settings && cfg.settings.enabled != null) {
       nrOn = Number(cfg.settings.enabled) !== 0;
