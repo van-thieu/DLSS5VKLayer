@@ -21,8 +21,13 @@
   });
 
   const biggestVideo = () => {
-    const vs = [...document.querySelectorAll('video')].filter(v => v.currentSrc || v.src);
-    return vs.sort((a, b) => (b.videoWidth * b.videoHeight) - (a.videoWidth * a.videoHeight))[0] || null;
+    const all = [...document.querySelectorAll('video')].filter(v => v.currentSrc || v.src);
+    // TikTok keeps the next/previous clip in the DOM. Pick the largest PLAYING one, not merely the
+    // largest element -- otherwise the ROI follows a paused portrait tile while a landscape clip
+    // is actually on screen.
+    const playing = all.filter(v => !v.paused && v.readyState >= 2);
+    const pool = playing.length ? playing : all;
+    return pool.sort((a, b) => (b.videoWidth * b.videoHeight) - (a.videoWidth * a.videoHeight))[0] || null;
   };
 
   const videoState = () => {
