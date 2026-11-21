@@ -116,8 +116,8 @@ def helper_ctl(action, timeout=30):
 
 
 def restart_chrome(url):
-    # A clean Browser.close is much kinder to the profile than SIGKILL. Spawn a detached relauncher
-    # first (it waits for Chrome to exit), then ask Chrome to close over DevTools.
+    # Reliable full restart: a detached script kills every Chrome process using the video profile
+    # (Browser.close is unreliable when DevTools is gone) and then relaunches via the wrapper.
     try:
         last = float(open(RESTART_FLAG).read().strip())
         if time.time() - last < 90:
@@ -126,33 +126,21 @@ def restart_chrome(url):
         pass
     with open(RESTART_FLAG, "w") as f:
         f.write(str(time.time()))
+    os.makedirs(f"/tmp/dlssnr-video", exist_ok=True)
     script = f"/tmp/dlssnr-video/restart-{UID}.sh"
-    safe = str(url).replace("'", "'\\''")
+    safe = str(url).replace("'", "'\\''") if url else "about:blank"
     with open(script, "w") as f:
-        f.write("#!/bin/bash\nsleep 3\n")
+        f.write("#!/bin/bash\n")
+        f.write("pkill -TERM -f 'chrome-video-profile' 2>/dev/null || true\n")
+        f.write("sleep 4\n")
+        f.write("pkill -KILL -f 'chrome-video-profile' 2>/dev/null || true\n")
+        f.write("sleep 1\n")
         f.write("nohup /home/vthieu/.local/bin/dlss5-chrome '" + safe +
                 "' > /tmp/opencode/dlss5-restart.log 2>&1 &\n")
     os.chmod(script, 0o755)
     subprocess.Popen(["setsid", "bash", script],
                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                      stderr=subprocess.DEVNULL, start_new_session=True)
-
-    async def close_browser():
-        try:
-            ver = json.load(urllib.request.urlopen(CHROME_CDP, timeout=3))
-            async with websockets.connect(ver["webSocketDebuggerUrl"]) as ws:
-                await ws.send(json.dumps({"id": 1, "method": "Browser.close"}))
-                try:
-                    await asyncio.wait_for(ws.recv(), 3)
-                except Exception:
-                    pass
-        except Exception:
-            # If DevTools is gone, the detached relauncher still handles it after the old process exits.
-            pass
-    try:
-        asyncio.run(close_browser())
-    except Exception:
-        pass
     return True, "chrome restart initiated"
 
 
