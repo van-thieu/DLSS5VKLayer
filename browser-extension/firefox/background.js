@@ -73,14 +73,17 @@ function applyGating() {
 
 // The toolbar action toggles the panel in the active tab. The content script stays injected for
 // gating (it must keep reporting video state), but the UI starts hidden until the icon is clicked.
-chrome.action.onClicked.addListener(async (tab) => {
+async function showPanel(tabId) {
   try {
-    await chrome.tabs.sendMessage(tab.id, { cmd: 'toggle_panel' });
+    await chrome.tabs.sendMessage(tabId, { cmd: 'show_panel' });
   } catch (e) {
-    // Page may not have the content script (e.g. chrome://), inject it once.
-    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
-    await chrome.tabs.sendMessage(tab.id, { cmd: 'toggle_panel' });
+    await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
+    await chrome.tabs.sendMessage(tabId, { cmd: 'show_panel' });
   }
+}
+
+chrome.action.onClicked.addListener(async (tab) => {
+  await showPanel(tab.id);
 });
 
 // PWA/app windows have no extension toolbar icon, so a global shortcut toggles the panel there.
@@ -90,10 +93,10 @@ chrome.commands.onCommand.addListener(async (command) => {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab) return;
     try {
-      await chrome.tabs.sendMessage(tab.id, { cmd: 'toggle_panel' });
+      await chrome.tabs.sendMessage(tab.id, { cmd: 'show_panel' });
     } catch (e) {
       await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
-      await chrome.tabs.sendMessage(tab.id, { cmd: 'toggle_panel' });
+      await chrome.tabs.sendMessage(tab.id, { cmd: 'show_panel' });
     }
   } catch (e) { /* no page / chrome:// */ }
 });

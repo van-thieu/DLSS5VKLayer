@@ -183,10 +183,13 @@
   let userHidden = false;         // explicit close hides it until the icon is clicked again
 
   chrome.runtime.onMessage.addListener((msg) => {
-    if (msg && msg.cmd === 'toggle_panel') {
-      panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
-      userHidden = panel.style.display === 'none';
-      if (panel.style.display === 'block') {
+    if (msg && (msg.cmd === 'toggle_panel' || msg.cmd === 'show_panel')) {
+      // The toolbar button/shortcut always SHOWS the panel. The ✕ in the panel hides it — a toggle
+      // was confusing once auto-show-on-video was added (clicking could hide an already-visible UI).
+      const show = msg.cmd === 'show_panel' ? true : panel.style.display === 'none';
+      panel.style.display = show ? 'block' : 'none';
+      userHidden = !show;
+      if (show) {
         refresh();
         refreshHelper();
         refreshProfiles();
