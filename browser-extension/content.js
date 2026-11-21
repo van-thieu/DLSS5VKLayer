@@ -108,6 +108,7 @@
   };
 
   let autoEnabled = true;
+  let autoProfileEnabled = true;
   let nrOn = true;
   // Off by default: Chrome's GPU process usually recovers on its own, and auto-restarting the whole
   // browser on a transient stale PID is more disruptive than the symptom.
@@ -153,6 +154,9 @@
         <span class="dlss5-toggle" id="dlss5-nr-toggle" role="switch" tabindex="0"><i></i></span></div>
       <div class="dlss5-row"><span class="dlss5-label">Auto NR (playing video)</span>
         <span class="dlss5-toggle" id="dlss5-auto" role="switch" tabindex="0"><i></i></span></div>
+      <div class="dlss5-row"><span class="dlss5-label">Auto profile by site</span>
+        <span class="dlss5-toggle" id="dlss5-auto-profile" role="switch" tabindex="0"><i></i></span></div>
+      <div id="dlss5-auto-profile-note" class="dlss5-note"></div>
       <div class="dlss5-row"><span class="dlss5-label">Helper <small id="dlss5-helper-status">checking…</small></span>
         <span class="dlss5-toggle" id="dlss5-helper-toggle" role="switch" tabindex="0"><i></i></span>
         <button class="dlss5-icon" id="dlss5-helper-restart" title="Restart helper">⟳</button></div>
@@ -451,7 +455,10 @@
     if (!name) return;
     const r = await send({ cmd: 'profiles.load', name });
     setStatus(r && r.ok ? `Loaded profile ${name}.` : `Load failed: ${r && r.error || 'unknown'}`, !(r && r.ok));
-    if (r && r.ok) refreshSettings();
+    if (r && r.ok) {
+      refreshSettings();
+      send({ cmd: 'profile_manual', name, url: location.href });
+    }
   };
   if (profileList) profileList.addEventListener('change', () => loadProfile(selectedProfile()));
   $('dlss5-profile-save').onclick = async () => {
@@ -459,6 +466,7 @@
     if (!name) return;
     const r = await send({ cmd: 'profiles.save', name });
     setStatus(r && r.ok ? `Saved profile ${name}.` : `Save failed: ${r && r.error || 'unknown'}`, !(r && r.ok));
+    if (r && r.ok) send({ cmd: 'profile_manual', name, url: location.href });
     refreshProfiles();
   };
   $('dlss5-profile-rename').onclick = async () => {
@@ -468,6 +476,7 @@
     if (!name) return;
     const r = await send({ cmd: 'profiles.rename', name: cur, newName: name });
     setStatus(r && r.ok ? `Renamed to ${name}.` : `Rename failed: ${r && r.error || 'unknown'}`, !(r && r.ok));
+    if (r && r.ok) send({ cmd: 'profile_renamed', oldName: cur, newName: name });
     refreshProfiles();
   };
   $('dlss5-profile-remove').onclick = async () => {
@@ -476,6 +485,7 @@
     if (!await askConfirm('Delete profile', `Remove "${cur}"?`)) return;
     const r = await send({ cmd: 'profiles.remove', name: cur });
     setStatus(r && r.ok ? `Removed ${cur}.` : `Delete failed: ${r && r.error || 'unknown'}`, !(r && r.ok));
+    if (r && r.ok) send({ cmd: 'profile_removed', name: cur });
     refreshProfiles();
   };
 
@@ -487,6 +497,12 @@
       setStatus(r && r.ok ? `Neural rendering ${v ? 'on' : 'off'}.` : 'Failed to toggle NR.', !(r && r.ok));
     });
     reportState(true);
+  });
+  bindToggle('dlss5-auto-profile', () => autoProfileEnabled, (v) => {
+    autoProfileEnabled = v;
+    send({ cmd: 'auto_profile_set', enabled: v }).then((r) => {
+      setStatus(r && r.ok ? `Auto profile ${v ? 'on' : 'off'}.` : 'Failed to set auto profile.', !(r && r.ok));
+    });
   });
   bindToggle('dlss5-auto', () => autoEnabled, (v) => {
     autoEnabled = v;
@@ -627,6 +643,15 @@
         : 'Enhanced only while a visible tab has playing video when Auto NR is on.';
     }
     await refreshSettings();
+    const ap = await send({ cmd: 'auto_profile_get' });
+    if (ap && ap.ok) {
+      autoProfileEnabled = !!ap.enabled;
+      setToggle($('dlss5-auto-profile'), autoProfileEnabled);
+      const note = panel.querySelector('#dlss5-auto-profile-note');
+      if (note) note.textContent = ap.profile
+        ? `Auto: ${ap.profile} for ${ap.host || 'this site'}`
+        : (ap.enabled ? `Auto on for ${ap.host || 'this site'} — no matching profile` : 'Auto profile off');
+    }
     const cfg = await send({ cmd: 'settings' });
     if (cfg && cfg.ok && cfg.settings && cfg.settings.enabled != null) {
       nrOn = Number(cfg.settings.enabled) !== 0;
