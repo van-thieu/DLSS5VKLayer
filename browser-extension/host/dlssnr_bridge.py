@@ -360,6 +360,7 @@ def handle(msg):
             "reversible": 0, "passes": 1, "style": 2, "intensity": 1.32,
             "localtone": 0.85, "localstructure": 1.8, "sharpness": 1,
             "automask": 1, "applymodel": 1, "compare": 0, "hdrmode": 0,
+            "detail": 1.0, "colour": 1.0, "transfer": 1, "guard": 2.0,
         }
         for shm, value in tuned.items():
             ok, text = shmctl("set", shm, str(value))
