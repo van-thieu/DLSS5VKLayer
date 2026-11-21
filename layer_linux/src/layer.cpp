@@ -509,6 +509,9 @@ struct SwapchainState {
     // settling makes vkAcquireNextImageKHR hang and Chrome kills the GPU process. Skip the first few
     // presents of every new swapchain; the application's own frames get through untouched.
     uint32_t warmup = 0;
+    // Last ROI this swapchain processed. A scroll feed changes the video rect when the next clip
+    // lands; rebuilding the model across that transition has been seen to hang Chrome's GPU.
+    uint32_t lastRoiX = 0, lastRoiY = 0, lastRoiW = 0, lastRoiH = 0;
 
     // The pass. Owns every surface it needs, including the transport pair -- the shared-memory
     // regions themselves when the driver will import them, host-visible staging when it will not.
@@ -1563,6 +1566,17 @@ static bool ProcessPresent(DeviceChain* dc, SwapchainState& sc, VkQueue queue,
     }
 
     dlssnr::FrameSettings fs = dlssnr::FrameSettings::Read(dc->shm.hdr);
+
+    // A scroll feed changes the video element's size/position from clip to clip. Let Chrome's
+    // compositor and the helper's model settle before doing GPU work on the new rectangle.
+    if (fs.roiEnabled && fs.roiW && fs.roiH) {
+        if (sc.lastRoiW && (sc.lastRoiX != fs.roiX || sc.lastRoiY != fs.roiY ||
+                            sc.lastRoiW != fs.roiW || sc.lastRoiH != fs.roiH)) {
+            g_suppressUntilMs.store(uint64_t(NowMs()) + 2500);
+        }
+        sc.lastRoiX = fs.roiX; sc.lastRoiY = fs.roiY;
+        sc.lastRoiW = fs.roiW; sc.lastRoiH = fs.roiH;
+    }
     // A repaint holds the captured frame, whatever the setting says.
     //
     // Held, the frame is not read back from the swapchain while the encode, the model and the resolve
