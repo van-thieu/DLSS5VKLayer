@@ -619,6 +619,10 @@ static std::mutex g_primaryMutex;
 // vkAcquireNextImageKHR hang and Chrome kills the GPU process. Present raw briefly after any
 // swapchain destruction so the transition settles before the pass resumes.
 static std::atomic<uint64_t> g_suppressUntilMs{0};
+// One grace period per GPU-process lifetime. A freshly restarted GPU process is still creating
+// swapchains and surfaces; capturing during that window has been observed to coincide with
+// vkAcquireNextImageKHR hangs. Let Chrome finish reinitializing before we touch its images.
+static std::atomic<bool> g_processGraceSet{false};
 
 // Adopts a larger swapchain; a present from anything else passes through untouched.
 static bool ClaimPrimary(VkDevice device, VkSwapchainKHR swapchain, uint32_t w, uint32_t h) {
@@ -798,6 +802,10 @@ static bool LayerEnabled() {
 static VKAPI_ATTR VkResult VKAPI_CALL Hook_CreateInstance(
     const VkInstanceCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator,
     VkInstance* pInstance) {
+    if (!g_processGraceSet.exchange(true)) {
+        g_suppressUntilMs.store(uint64_t(NowMs()) + 5000);
+        Log("[layer] GPU process starting — presenting raw for 5s while Chrome initializes");
+    }
     auto* link = const_cast<VkLayerInstanceCreateInfo*>((const VkLayerInstanceCreateInfo*)pCreateInfo->pNext);
     while (link && !(link->sType == VK_STRUCTURE_TYPE_LOADER_INSTANCE_CREATE_INFO &&
                      link->function == VK_LAYER_LINK_INFO))

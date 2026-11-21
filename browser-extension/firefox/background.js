@@ -130,12 +130,18 @@ function applyGating() {
     if (desired && active) requestToNative({ cmd: 'roi', rect: active.rect, swapW: active.swapW, swapH: active.swapH }).catch(() => {});
     return;
   }
-  lastDesired = desired;
   if (desired && active) {
+    // Do not fire the pass until the helper, layer presenter and Chrome GPU process are all up.
     requestToNative({ cmd: 'roi', rect: active.rect, swapW: active.swapW, swapH: active.swapH })
-      .then(() => requestToNative({ cmd: 'set', key: 'enabled', value: 1 }))
+      .then(() => requestToNative({ cmd: 'chrome.ready' }))
+      .then((r) => {
+        if (!r || !r.ready) return;        // leave lastDesired at 0 so we retry next poll
+        lastDesired = 1;
+        return requestToNative({ cmd: 'set', key: 'enabled', value: 1 });
+      })
       .catch(() => {});
   } else {
+    lastDesired = 0;
     requestToNative({ cmd: 'set', key: 'enabled', value: 0 }).catch(() => {});
   }
 }

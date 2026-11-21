@@ -103,6 +103,45 @@ def remember_profile(name):
         pass
 
 
+def chrome_ready():
+    """Check that Chrome's GPU process is up with our layer loaded and the helper is ready."""
+    reasons = []
+    ok, text = shmctl("status")
+    if not ok:
+        return False, ["shm unavailable: " + text]
+    s = parse_pairs(text)
+    if int(s.get("initialised", 0)) != 1 or int(s.get("version", 0)) != 22:
+        reasons.append("shm version mismatch")
+    if int(s.get("helper_state", 0)) != 4:
+        reasons.append("helper not running")
+    if int(s.get("model_up", 0)) != 1:
+        reasons.append("model not ready")
+    pid = int(s.get("layer_pid", 0))
+    if not pid or not os.path.isdir(f"/proc/{pid}"):
+        reasons.append("layer presenter not alive")
+
+    # Find the video-profile GPU process and confirm the video layer is mapped into it.
+    gpu_ok = False
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            cmd = open(f"/proc/{entry}/cmdline", "rb").read().replace(b"\0", b" ").decode("utf-8", "ignore")
+        except Exception:
+            continue
+        if "--type=gpu-process" not in cmd or "chrome-video-profile" not in cmd:
+            continue
+        try:
+            maps = open(f"/proc/{entry}/maps", "rb").read().decode("utf-8", "ignore")
+            gpu_ok = "libVkLayer_NV_dlssnr" in maps or "VK_LAYER_NV_dlssnr_video" in maps
+        except Exception:
+            gpu_ok = False
+        break
+    if not gpu_ok:
+        reasons.append("GPU process not ready with video layer")
+    return not reasons, reasons
+
+
 def helper_ctl(action, timeout=30):
     if not os.path.isfile(HELPER_CLI):
         return False, "dlssnr-helper not found"
@@ -152,6 +191,9 @@ def handle(msg):
     if cmd == "chrome.restart":
         ok, text = restart_chrome(msg.get("url", ""))
         return {"ok": ok, "text": text}
+    if cmd == "chrome.ready":
+        ready, reasons = chrome_ready()
+        return {"ok": True, "ready": ready, "reasons": reasons}
     if cmd == "helper.status":
         ok, text = helper_ctl("status", timeout=8)
         return {"ok": ok, "text": text, "running": ok and not text.lower().startswith("helper not running")}
