@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "DLSS5 Video Controls",
-  "version": "2.0.3",
+  "version": "2.0.4",
   "description": "Tune DLSS5 neural rendering on streaming video and send the playing video to the DLSS5 player.",
   "permissions": [
     "nativeMessaging",

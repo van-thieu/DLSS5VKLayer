@@ -103,7 +103,9 @@
 
   let autoEnabled = true;
   let nrOn = true;
-  let autoRestartEnabled = true;
+  // Off by default: Chrome's GPU process usually recovers on its own, and auto-restarting the whole
+  // browser on a transient stale PID is more disruptive than the symptom.
+  let autoRestartEnabled = false;
   let manualRoi = false;
   let helperOn = false;
   const reportState = (manual = false) => send({
