@@ -76,9 +76,23 @@
   };
 
   let autoEnabled = true;
+  let nrOn = true;
+  let autoRestartEnabled = true;
+  let helperOn = false;
   const reportState = (manual = false) => send({
     cmd: 'tab_report', ...videoState(), auto: autoEnabled, manual,
   });
+
+  const setToggle = (el, on) => el.classList.toggle('on', !!on);
+  const bindToggle = (id, get, set) => {
+    const el = $(id);
+    setToggle(el, get());
+    const flip = () => { set(!get()); setToggle(el, get()); };
+    el.addEventListener('click', flip);
+    el.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); flip(); }
+    });
+  };
 
   // Chrome hangs in vkAcquireNextImageKHR if the layer is composing while a tab's swapchain is
   // recreated on reload. Turn the pass off before the page goes away and keep it off briefly after.
@@ -98,33 +112,29 @@
     <div id="dlss5-head"><span>DLSS5 Neural Rendering</span><button id="dlss5-close">×</button></div>
     <div id="dlss5-body">
       <div id="dlss5-status">Connecting...</div>
-      <div class="dlss5-actions">
-        <button id="dlss5-play">Enhance in player</button>
-        <button id="dlss5-fullscreen">Fullscreen video</button>
-        <button id="dlss5-capture">Capture A/B</button>
-      </div>
-      <div class="dlss5-row">
-        <button id="dlss5-nr-on">NR on</button>
-        <button id="dlss5-nr-off">NR off</button>
-      </div>
-      <label class="dlss5-check"><input id="dlss5-auto" type="checkbox" checked> Auto: NR only while this
-      visible tab has playing video</label>
       <div id="dlss5-roi-note" class="dlss5-note">ROI initializing...</div>
-      <div id="dlss5-note" class="dlss5-note"></div>
-      <div class="dlss5-section-title">Helper</div>
-      <div id="dlss5-helper-status" class="dlss5-note">Checking...</div>
-      <div class="dlss5-actions">
-        <button id="dlss5-helper-start">Start</button>
-        <button id="dlss5-helper-restart">Restart</button>
-        <button id="dlss5-helper-stop">Stop</button>
+      <div class="dlss5-divider"></div>
+      <div class="dlss5-row"><span class="dlss5-label">Neural Rendering</span>
+        <span class="dlss5-toggle" id="dlss5-nr-toggle" role="switch" tabindex="0"><i></i></span></div>
+      <div class="dlss5-row"><span class="dlss5-label">Auto NR (playing video)</span>
+        <span class="dlss5-toggle" id="dlss5-auto" role="switch" tabindex="0"><i></i></span></div>
+      <div class="dlss5-row"><span class="dlss5-label">Helper <small id="dlss5-helper-status">checking…</small></span>
+        <span class="dlss5-toggle" id="dlss5-helper-toggle" role="switch" tabindex="0"><i></i></span>
+        <button class="dlss5-icon" id="dlss5-helper-restart" title="Restart helper">⟳</button></div>
+      <div class="dlss5-row"><span class="dlss5-label">Auto Restart Chrome</span>
+        <span class="dlss5-toggle" id="dlss5-auto-restart" role="switch" tabindex="0"><i></i></span>
+        <button class="dlss5-icon" id="dlss5-chrome-restart" title="Restart Chrome">⟳</button></div>
+      <div class="dlss5-divider"></div>
+      <div class="dlss5-profilebar">
+        <select id="dlss5-profile-list"></select>
+        <button class="dlss5-icon" id="dlss5-profile-rename" title="Rename profile">✎</button>
+        <button class="dlss5-icon" id="dlss5-profile-save" title="Save current as profile">▣</button>
+        <button class="dlss5-icon" id="dlss5-profile-remove" title="Delete profile">✕</button>
       </div>
-      <label class="dlss5-check"><input id="dlss5-auto-restart" type="checkbox" checked> Auto-restart Chrome if the layer goes stale during video</label>
-      <div class="dlss5-actions"><button id="dlss5-chrome-restart">Restart Chrome</button></div>
       <div id="dlss5-tabs" class="dlss5-tabbar">
         <button data-tab="Rendering" class="active">Rendering</button>
         <button data-tab="Quality">Quality</button>
         <button data-tab="Composition">Composition</button>
-        <button data-tab="Profiles">Profiles</button>
       </div>
       <div id="dlss5-pages"></div>
     </div>`;
@@ -144,7 +154,7 @@
 
   const $ = (id) => panel.querySelector('#' + id);
   const status = $('dlss5-status');
-  const note = $('dlss5-note');
+
   const pages = $('dlss5-pages');
   const controls = new Map();
 
@@ -172,9 +182,7 @@
   // ---------- control definitions ----------
   const DEF = {
     Rendering: [
-      { key: 'enabled', label: 'Enabled', type: 'check' },
       { key: 'style', label: 'Style', type: 'choice', options: [['0', 'Default'], ['1', 'Natural'], ['2', 'Cinematic']] },
-      { key: 'preset', label: 'Preset', type: 'int', min: 0, max: 15 },
       { key: 'intensity', label: 'Intensity', type: 'range', min: 0, max: 4, step: 0.05 },
       { key: 'localstructure', label: 'Local structure', type: 'range', min: 0, max: 4, step: 0.05 },
       { key: 'localtone', label: 'Local tone', type: 'range', min: 0, max: 4, step: 0.05 },
@@ -303,7 +311,6 @@
   const buildProfiles = () => {
     const wrap = document.createElement('div');
     wrap.innerHTML = `
-      <div class="dlss5-note">Video-only profiles. Game profiles in the desktop helper are separate.</div>
       <select id="dlss5-profile-list" size="6"></select>
       <div class="dlss5-actions">
         <button id="dlss5-profile-load">Load</button>
@@ -371,64 +378,50 @@
 
   buildPages();
 
-  // ---------- actions ----------
-  $('dlss5-play').addEventListener('click', async () => {
-    const v = biggestVideo();
-    if (!v) { setStatus('No <video> element found on this page.', true); return; }
-    const url = v.currentSrc || v.src;
-    if (!url) { setStatus('This video has no readable source.', true); return; }
-    if (url.startsWith('blob:')) note.textContent = 'This site uses Media Source Extensions. Use "Grab browser video" in the desktop app for sites like this.';
-    const r = await send({ cmd: 'play', url });
-    setStatus(r && r.ok ? (r.launched ? 'Player launched with this video.' : 'Sent to DLSS5 player.') :
-                          ('Failed: ' + (r && r.error || 'native host not reachable')), !(r && r.ok));
+  // ---------- toggles / actions ----------
+  bindToggle('dlss5-nr-toggle', () => nrOn, (v) => {
+    nrOn = v;
+    autoEnabled = false; setToggle($('dlss5-auto'), false);
+    send({ cmd: 'set', key: 'enabled', value: v ? 1 : 0 }).then((r) => {
+      setStatus(r && r.ok ? `Neural rendering ${v ? 'on' : 'off'}.` : 'Failed to toggle NR.', !(r && r.ok));
+    });
+    reportState(true);
   });
-  $('dlss5-fullscreen').addEventListener('click', () => {
-    const v = biggestVideo();
-    if (v && v.requestFullscreen) v.requestFullscreen().catch(() => {});
-    else if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(() => {});
+  bindToggle('dlss5-auto', () => autoEnabled, (v) => {
+    autoEnabled = v;
+    reportState().then(() => setStatus(v ? 'Auto NR on.' : 'Auto NR off.', false));
   });
-  $('dlss5-capture').addEventListener('click', async () => {
-    const r = await send({ cmd: 'capture' });
-    setStatus(r && r.ok ? 'Captured before/after PNG pairs to ~/.local/state/dlssnr/captures' :
-                          ('Capture failed: ' + (r && r.error || 'no host')), !(r && r.ok));
-  });
-  const manualSet = async (value) => {
-    autoEnabled = false;
-    $('dlss5-auto').checked = false;
-    await reportState(true);
-    const r = await send({ cmd: 'set', key: 'enabled', value });
-    setStatus(r && r.ok ? `Manual override: NR ${value ? 'on' : 'off'} for 30s.` :
-                          ('Failed: ' + (r && r.error || 'no host')), !(r && r.ok));
-  };
-  $('dlss5-nr-on').addEventListener('click', () => manualSet(1));
-  $('dlss5-nr-off').addEventListener('click', () => manualSet(0));
-
+  $('dlss5-helper-status') && ($('dlss5-helper-status').textContent = 'checking…');
   const helperStatus = $('dlss5-helper-status');
   const refreshHelper = async () => {
     const r = await send({ cmd: 'helper.status' });
-    if (!r || !r.ok) { helperStatus.textContent = 'Helper status unavailable'; return; }
-    helperStatus.textContent = r.running ? 'Helper is running' : 'Helper is stopped — NR cannot process frames';
+    if (!r || !r.ok) { helperStatus.textContent = 'status unavailable'; return; }
+    helperOn = r.running;
+    setToggle($('dlss5-helper-toggle'), helperOn);
+    helperStatus.textContent = r.running ? 'running' : 'stopped';
     helperStatus.style.color = r.running ? '#a5d6a7' : '#ff8a80';
   };
-  const helperAction = async (action) => {
-    helperStatus.textContent = `${action}ing helper...`;
-    const r = await send({ cmd: `helper.${action.toLowerCase()}` });
-    setStatus(r && r.ok ? `Helper ${action.toLowerCase()} done.` : `Helper failed: ${r && r.error || 'unknown'}`, !(r && r.ok));
+  bindToggle('dlss5-helper-toggle', () => helperOn, (v) => {
+    send({ cmd: v ? 'helper.start' : 'helper.stop' }).then(async (r) => {
+      setStatus(r && r.ok ? `Helper ${v ? 'started' : 'stopped'}.` : `Helper failed: ${r && r.error || 'unknown'}`, !(r && r.ok));
+      await refreshHelper();
+    });
+  });
+  $('dlss5-helper-restart').onclick = async () => {
+    setStatus('Restarting helper...', false);
+    const r = await send({ cmd: 'helper.restart' });
+    setStatus(r && r.ok ? 'Helper restarted.' : `Helper failed: ${r && r.error || 'unknown'}`, !(r && r.ok));
     await refreshHelper();
   };
-  $('dlss5-helper-start').onclick = () => helperAction('start');
-  $('dlss5-helper-restart').onclick = () => helperAction('restart');
-  $('dlss5-helper-stop').onclick = () => helperAction('stop');
-  $('dlss5-auto-restart').onchange = (e) => { autoRestartEnabled = e.target.checked; };
+  bindToggle('dlss5-auto-restart', () => autoRestartEnabled, (v) => {
+    autoRestartEnabled = v;
+    setStatus(v ? 'Auto-restart Chrome on.' : 'Auto-restart Chrome off.', false);
+  });
   $('dlss5-chrome-restart').onclick = async () => {
     setStatus('Restarting Chrome and reopening this video...', false);
     const r = await send({ cmd: 'chrome.restart', url: location.href });
     setStatus(r && r.ok ? 'Restarting...' : `Restart failed: ${r && r.error || 'unknown'}`, !(r && r.ok));
   };
-  $('dlss5-auto').addEventListener('change', (e) => {
-    autoEnabled = e.target.checked;
-    reportState().then(() => setStatus(autoEnabled ? 'Auto-follow active video tab enabled.' : 'Auto-follow disabled.', false));
-  });
 
   // ---------- refresh ----------
   const setControlValue = (key, raw) => {
@@ -474,7 +467,6 @@
   let tick = 0;
   let staleCount = 0;
   let restarting = false;
-  let autoRestartEnabled = true;
 
   let staleNotified = false;
   const showStaleWarning = () => {
@@ -501,7 +493,11 @@
         ? `Source ${s.intrinsic ? s.intrinsic.w + '×' + s.intrinsic.h + ' ' + s.intrinsic.fit : '?'} · ROI ${s.rect.x},${s.rect.y} ${s.rect.w}×${s.rect.h} (window pixels, chrome offset applied)`
         : 'Use the tabs below to tune the same model games use. Video is enhanced only while a visible tab has playing video (Auto).';
     }
-    await refreshSettings();
+    const cfg = await send({ cmd: 'settings' });
+    if (cfg && cfg.ok && cfg.settings && cfg.settings.enabled != null) {
+      nrOn = Number(cfg.settings.enabled) !== 0;
+      setToggle($('dlss5-nr-toggle'), nrOn);
+    }
     if (++tick % 4 === 0) {
       refreshProfiles();
       refreshHelper();
