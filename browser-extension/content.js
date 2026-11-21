@@ -88,6 +88,7 @@
   let autoEnabled = true;
   let nrOn = true;
   let autoRestartEnabled = true;
+  let manualRoi = false;
   let helperOn = false;
   const reportState = (manual = false) => send({
     cmd: 'tab_report', ...videoState(), auto: autoEnabled, manual,
@@ -134,6 +135,14 @@
       <div class="dlss5-row"><span class="dlss5-label">Auto Restart Chrome</span>
         <span class="dlss5-toggle" id="dlss5-auto-restart" role="switch" tabindex="0"><i></i></span>
         <button class="dlss5-icon" id="dlss5-chrome-restart" title="Restart Chrome">⟳</button></div>
+      <div class="dlss5-row"><span class="dlss5-label">Manual ROI</span>
+        <span class="dlss5-toggle" id="dlss5-manual-roi" role="switch" tabindex="0"><i></i></span></div>
+      <div class="dlss5-row dlss5-roi-inputs">
+        <input id="dlss5-roi-x" type="number" title="ROI X" placeholder="x">
+        <input id="dlss5-roi-y" type="number" title="ROI Y" placeholder="y">
+        <input id="dlss5-roi-w" type="number" title="ROI width" placeholder="w">
+        <input id="dlss5-roi-h" type="number" title="ROI height" placeholder="h">
+      </div>
       <div class="dlss5-divider"></div>
       <div class="dlss5-profilebar">
         <select id="dlss5-profile-list"></select>
@@ -462,6 +471,25 @@
     autoRestartEnabled = v;
     setStatus(v ? 'Auto-restart Chrome on.' : 'Auto-restart Chrome off.', false);
   });
+  bindToggle('dlss5-manual-roi', () => manualRoi, (v) => {
+    manualRoi = v;
+    panel.querySelector('.dlss5-roi-inputs').style.display = v ? 'flex' : 'none';
+    if (v) {
+      const st = videoState();
+      if (st.rect) ['x','y','w','h'].forEach(k => { $('dlss5-roi-' + k).value = st.rect[k]; });
+    }
+    setStatus(v ? 'Manual ROI on — edit x/y/w/h below.' : 'Manual ROI off — following the video.', false);
+  });
+  ['x','y','w','h'].forEach(k => {
+    $('dlss5-roi-' + k).addEventListener('change', () => {
+      const rect = {
+        x: +$('dlss5-roi-x').value || 0, y: +$('dlss5-roi-y').value || 0,
+        w: +$('dlss5-roi-w').value || 64, h: +$('dlss5-roi-h').value || 64,
+      };
+      const st = videoState();
+      send({ cmd: 'roi', rect, swapW: st.swapW, swapH: st.swapH });
+    });
+  });
   $('dlss5-chrome-restart').onclick = async () => {
     setStatus('Restarting Chrome and reopening this video...', false);
     const r = await send({ cmd: 'chrome.restart', url: location.href });
@@ -531,7 +559,7 @@
     reportState();
     // Send the ROI straight to the native host too. This keeps the swapchain size accurate even if
     // the background service worker is running a cached copy of its script.
-    if (s.visible && s.playing && s.rect)
+    if (!manualRoi && s.visible && s.playing && s.rect)
       send({ cmd: 'roi', rect: s.rect, swapW: s.swapW, swapH: s.swapH });
     const roiNote = panel.querySelector('#dlss5-roi-note');
     if (roiNote) {
