@@ -27,6 +27,7 @@ CHROME_CDP = "http://127.0.0.1:9222/json/version"
 # Video profiles are deliberately separate from the desktop helper's game profiles. Removing or
 # renaming a profile from the browser must never touch a game profile.
 PROFILE_DIR = os.path.expanduser("~/.config/dlssnr-video/dlssnr/profiles")
+VIDEO_CONFIG = os.path.expanduser("~/.config/dlssnr-video/dlssnr/config.ini")
 
 # shmctl setting name -> the set_* key used by dlssnr_gui profile files.
 PROFILE_KEYS = {
@@ -88,6 +89,18 @@ def parse_pairs(text):
             k, v = line.split("=", 1)
             out[k.strip()] = v.strip()
     return out
+
+
+def remember_profile(name):
+    try:
+        lines = []
+        if os.path.isfile(VIDEO_CONFIG):
+            lines = [l for l in open(VIDEO_CONFIG).read().splitlines()
+                     if not l.startswith("profile=")]
+        lines.append("profile=" + name)
+        open(VIDEO_CONFIG, "w").write("\n".join(lines) + "\n")
+    except Exception:
+        pass
 
 
 def helper_ctl(action, timeout=30):
@@ -285,6 +298,7 @@ def handle(msg):
                 ok, text = shmctl("set", shm, value)
                 if not ok:
                     return {"ok": False, "error": text}
+            remember_profile(os.path.basename(path)[:-4])
             return {"ok": True, "name": os.path.basename(path)[:-4], "count": len(values)}
         except Exception as e:
             return {"ok": False, "error": str(e)}
@@ -306,6 +320,7 @@ def handle(msg):
                         if key == "set_composition_enabled":
                             v = str(0 if int(float(v)) else 1)   # GUI stores the inverse
                         f.write(f"{key}={v}\n")
+            remember_profile(os.path.basename(path)[:-4])
             return {"ok": True, "name": os.path.basename(path)[:-4]}
         except Exception as e:
             return {"ok": False, "error": str(e)}
