@@ -73,6 +73,21 @@ chrome.action.onClicked.addListener(async (tab) => {
   }
 });
 
+// PWA/app windows have no extension toolbar icon, so a global shortcut toggles the panel there.
+chrome.commands.onCommand.addListener(async (command) => {
+  if (command !== '_execute_action') return;
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab) return;
+    try {
+      await chrome.tabs.sendMessage(tab.id, { cmd: 'toggle_panel' });
+    } catch (e) {
+      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
+      await chrome.tabs.sendMessage(tab.id, { cmd: 'toggle_panel' });
+    }
+  } catch (e) { /* no page / chrome:// */ }
+});
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg && msg.cmd === 'tab_report') {
     const id = sender.tab && sender.tab.id;
