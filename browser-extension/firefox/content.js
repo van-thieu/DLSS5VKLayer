@@ -36,7 +36,10 @@
   const videoState = () => {
     const v = biggestVideo();
     const r = v ? v.getBoundingClientRect() : null;
-    const playing = !!(v && !v.paused && v.readyState >= 2 && r && r.width > 0 && r.height > 0);
+    // A real streaming video, not a tiny ad/preload tile: require a substantial visible box.
+    const playing = !!(v && !v.paused && v.readyState >= 2 && r &&
+                       r.width >= 200 && r.height >= 150 &&
+                       r.bottom > 0 && r.top < innerHeight && r.right > 0 && r.left < innerWidth);
     let rect = null;
     let intrinsic = null;
     if (v && r && playing) {
@@ -178,21 +181,37 @@
       </div>
       <div id="dlss5-pages"></div>
     </div>`;
-  document.documentElement.appendChild(panel);
-  panel.style.display = 'none';   // shown only by clicking the toolbar icon, or when video plays
-  let userHidden = false;         // explicit close hides it until the icon is clicked again
+  // Build the panel in memory but do NOT put it in the DOM until a real, visible playing video is
+  // detected (or the user explicitly clicks the toolbar button).
+  let panelAttached = false;
+  let userHidden = false;
+  let manualPinned = false;
+  let lastPlayingMs = 0;
+
+  const attachPanel = (manual) => {
+    if (manual) manualPinned = true;
+    userHidden = false;
+    if (!panelAttached) {
+      (document.fullscreenElement || document.documentElement).appendChild(panel);
+      panelAttached = true;
+    }
+    panel.style.display = 'block';
+    refreshProfiles(); refreshHelper();
+  };
+  const detachPanel = () => {
+    if (panelAttached) panel.remove();
+    panelAttached = false;
+  };
 
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg && (msg.cmd === 'toggle_panel' || msg.cmd === 'show_panel')) {
-      // The toolbar button/shortcut always SHOWS the panel. The ✕ in the panel hides it — a toggle
-      // was confusing once auto-show-on-video was added (clicking could hide an already-visible UI).
-      const show = msg.cmd === 'show_panel' ? true : panel.style.display === 'none';
-      panel.style.display = show ? 'block' : 'none';
-      userHidden = !show;
-      if (show) {
+      if (panelAttached && panel.style.display === 'block' && msg.cmd === 'toggle_panel') {
+        detachPanel();
+        userHidden = true;
+        manualPinned = false;
+      } else {
+        attachPanel(true);
         refresh();
-        refreshHelper();
-        refreshProfiles();
       }
     }
   });
@@ -209,8 +228,9 @@
   };
 
   $('dlss5-close').addEventListener('click', () => {
-    panel.style.display = 'none';
+    detachPanel();
     userHidden = true;
+    manualPinned = false;
   });
   const head = $('dlss5-head');
   let drag = null;
@@ -581,17 +601,18 @@
     const sig = videoSig();
     lastVideoSig = sig;
     const s = videoState();
-    // Show the panel as soon as video plays (unless the user explicitly closed it). This makes the
-    // controls reachable in PWA/app windows where clicking the extension button is awkward.
-    if (s.visible && s.playing && !userHidden && panel.style.display === 'none') {
-      panel.style.display = 'block';
-      refreshProfiles(); refreshHelper();
+    // Only create an overlay once a real video is actually playing in this visible tab.
+    if (s.visible && s.playing && !userHidden) {
+      lastPlayingMs = Date.now();
+      if (!panelAttached) attachPanel(false);
+    } else if (panelAttached && !manualPinned && Date.now() - lastPlayingMs > 3000) {
+      detachPanel();
     }
-    // In fullscreen only the fullscreen element is painted; move the panel inside it so it stays
-    // visible, then restore it to <html> when leaving fullscreen.
-    const fs = document.fullscreenElement;
-    const wantedParent = fs || document.documentElement;
-    if (panel.parentElement !== wantedParent) wantedParent.appendChild(panel);
+    // In fullscreen only the fullscreen element is painted; keep the panel inside it.
+    if (panelAttached) {
+      const wantedParent = document.fullscreenElement || document.documentElement;
+      if (panel.parentElement !== wantedParent) wantedParent.appendChild(panel);
+    }
     const probe = await send({ cmd: 'ping' });
     if (probe && probe.staleContext) { showStaleWarning(); return; }
     reportState();
