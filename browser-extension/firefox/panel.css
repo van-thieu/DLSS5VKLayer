@@ -46,9 +46,10 @@
 }
 #dlss5-tabbar button:hover { background: rgba(255,255,255,0.05); color: #ddd; }
 #dlss5-tabbar button.active {
-  background: transparent; color: #fff; font-weight: 600;
+  background: transparent !important; color: #fff !important; font-weight: 600;
   border-bottom-color: #2d6cdf;
 }
+#dlss5-tabbar button:not(.active) { background: transparent !important; color: #aaa !important; }
 .dlss5-page { padding-top: 4px; }
 #dlss5-profile-list {
   width: 100%; height: 26px; background: #26262c; color: #eee;

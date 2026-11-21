@@ -199,9 +199,9 @@ def handle(msg):
         if not ok:
             return {"ok": False, "error": text}
         s = parse_pairs(text)
-        keys = ["style", "intensity", "applymodel", "compare", "comparesplit",
-                "workingscale", "passes", "mvec", "enabled"]
-        return {"ok": True, "settings": {k: s.get(k) for k in keys}}
+        # Return every setting the extension can show. The old 9-key list left most sliders showing
+        # their HTML defaults even after a profile was loaded or changed live.
+        return {"ok": True, "settings": {k: v for k, v in s.items() if k in PROFILE_KEYS}}
 
     if cmd == "suppress":
         try:
