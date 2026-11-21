@@ -3,7 +3,8 @@
   top: 60px;
   right: 20px;
   z-index: 2147483647;
-  width: 360px;
+  width: 300px;
+  right: 4px;
   max-height: calc(100vh - 80px);
   overflow-y: auto;
   background: rgba(18, 18, 22, 0.97);

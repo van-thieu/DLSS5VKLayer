@@ -63,12 +63,15 @@
       const visH = document.documentElement.clientHeight || innerHeight;
       const left = Math.max(0, r.left + ox);
       const top = Math.max(0, r.top + oy);
-      rect = {
-        x: Math.round((chromeLeft + left) * factor),
-        y: Math.round((chromeTop + top) * factor),
-        w: Math.round(Math.max(0, Math.min(cw, visW - left)) * factor),
-        h: Math.round(Math.max(0, Math.min(ch, visH - top)) * factor),
-      };
+      const right = Math.min(visW, left + cw);
+      const bottom = Math.min(visH, top + ch);
+      // Floor the origin and ceil the far edge: getBoundingClientRect can be fractional, and
+      // rounding both ends leaves a one-pixel un-enhanced outline at the top/right of the video.
+      const x0 = Math.floor((chromeLeft + left) * factor);
+      const y0 = Math.floor((chromeTop + top) * factor);
+      const x1 = Math.ceil((chromeLeft + right) * factor);
+      const y1 = Math.ceil((chromeTop + bottom) * factor);
+      rect = { x: x0, y: y0, w: Math.max(0, x1 - x0), h: Math.max(0, y1 - y0) };
       intrinsic = { w: vw, h: vh, fit };
     }
     return {
