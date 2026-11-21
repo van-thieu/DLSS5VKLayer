@@ -5,8 +5,12 @@
   window.__dlss5Panel = true;
 
   const send = (msg) => new Promise((resolve) => {
-    try { chrome.runtime.sendMessage(msg, (r) => resolve(r || { ok: false })); }
-    catch (e) { resolve({ ok: false, error: String(e) }); }
+    try {
+      chrome.runtime.sendMessage(msg, (r) => {
+        if (chrome.runtime.lastError) { resolve({ ok: false, error: chrome.runtime.lastError.message, staleContext: true }); return; }
+        resolve(r || { ok: false });
+      });
+    } catch (e) { resolve({ ok: false, error: String(e), staleContext: /context.*invalid/i.test(String(e)) }); }
   });
 
   const biggestVideo = () => {
@@ -472,10 +476,20 @@
   let restarting = false;
   let autoRestartEnabled = true;
 
+  let staleNotified = false;
+  const showStaleWarning = () => {
+    if (staleNotified) return;
+    staleNotified = true;
+    status.textContent = 'Extension was reloaded — refresh this tab to reconnect.';
+    status.style.color = '#ff8a80';
+  };
+
   async function refresh() {
     const sig = videoSig();
     lastVideoSig = sig;
     const s = videoState();
+    const probe = await send({ cmd: 'ping' });
+    if (probe && probe.staleContext) { showStaleWarning(); return; }
     reportState();
     // Send the ROI straight to the native host too. This keeps the swapchain size accurate even if
     // the background service worker is running a cached copy of its script.

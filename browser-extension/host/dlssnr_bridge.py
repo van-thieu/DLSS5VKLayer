@@ -16,9 +16,9 @@ import urllib.request
 import websockets
 
 UID = os.getuid()
-SHM = os.environ.get("DLSSNR_SHM", f"/tmp/dlssnr-{UID}/shm.bin")
-SHMCTL = os.path.expanduser("~/.local/bin/dlssnr-shmctl")
-HELPER_CLI = os.path.expanduser("~/.local/bin/dlssnr-helper")
+SHM = os.environ.get("DLSSNR_SHM", f"/tmp/dlssnr-video-{UID}/shm.bin")
+SHMCTL = os.path.expanduser("~/.local/bin/dlssnr-video-shmctl")
+HELPER_CLI = os.path.expanduser("~/.local/bin/dlssnr-video-helper")
 PLAYER = os.path.expanduser("~/.local/bin/dlssnr-gui-video")
 APP_SOCK = f"/tmp/dlssnr-video/app-{UID}.sock"
 SUPPRESS_FILE = f"/tmp/dlssnr-video/suppress-until-{UID}"
