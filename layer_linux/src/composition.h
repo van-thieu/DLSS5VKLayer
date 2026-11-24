@@ -74,6 +74,10 @@ struct FrameSettings {
     // How much of the relighting ratio comes from the neighbourhood. See ratioSmoothPercent.
     float ratioSmooth = 0.0f;
 
+    // Layer-side unsharp mask strength, 0..1. The model has no sharpening input, so this is applied
+    // to the composed frame by the resolve shader rather than written into the NGX parameter block.
+    float sharpness = 0.0f;
+
 
     static FrameSettings Read(const ShmHeader* h);
 };

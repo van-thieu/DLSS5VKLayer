@@ -62,6 +62,10 @@ static constexpr size_t kNameBytes = 128;
 // entry that does not name a field, follows the global setting -- which is what makes "pass 3 is
 // gentler" expressible without restating everything else about pass 3.
 enum PassOverrideBit : uint32_t {
+    // High bit: this pass is explicitly using per-pass settings rather than
+    // following the global controls. Layout is unchanged, so the protocol
+    // version does not move; older builds simply ignore the bit.
+    kPassEnabled = 1u << 31,
     kOverrideIntensity = 1u << 0,
     kOverrideLocalStructure = 1u << 1,
     kOverrideLocalTone = 1u << 2,

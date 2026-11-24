@@ -199,6 +199,11 @@ struct alignas(256) DlssNrConstants
     // How much of the relighting ratio comes from the neighbourhood. See ratioSmoothPercent.
     float RatioSmooth;
 
+    // Layer-side unsharp mask. The DLSS-NR model has no sharpening parameter (a scan of
+    // nvngx_dlssnr.dll finds no Sharpness/InSharpness/DoSharpening name), so the GUI's Sharpness
+    // setting is applied here, to the composed frame, instead of being written to NGX where nobody
+    // reads it. Trailing scalar, mirrored in the shader cbuffer so the pinned offsets stay flat.
+    float Sharpness;
 
 };
 

@@ -85,6 +85,7 @@ FrameSettings FrameSettings::Read(const ShmHeader* h) {
     s.holdFrame = h->holdFrame.load();
     s.downscaler = h->scalingDownscaler.load();
     s.compositionBypass = h->compositionBypass.load();
+    s.sharpness = BitsToFloat(h->sharpnessBits.load());
     {
         // DLSSNR_SETTLE, in the same hundredths, so the ramp can be swept from a launch option --
         // including back to 100, which is the behaviour before it existed.
@@ -159,6 +160,7 @@ FrameSettings FrameSettings::Read(const ShmHeader* h) {
     if (s.whitePointSource > kWhitePointMeasured) s.whitePointSource = kWhitePointManual;
     s.compareSplit = clamp(s.compareSplit, 0.0f, 1.0f, 0.5f);
     s.compareZoom = clamp(s.compareZoom, 1.0f, 2.0f, 1.0f);
+    s.sharpness = clamp(s.sharpness, 0.0f, 1.0f, 0.0f);
 
     // Above 1.0 the model supersamples, up to upstream's 2x ceiling.
     s.workingScale = clamp(s.workingScale, 0.25f, 2.0f, 1.0f);
@@ -1198,6 +1200,7 @@ DlssNrConstants Composition::BaseConstants(const FrameSettings& s) const {
     c.HdrTransfer = _hdrProxy ? _hdrTransfer : 0u;
     c.ColourTrust = s.colourTrust;
     c.RatioSmooth = s.ratioSmooth;
+    c.Sharpness = s.sharpness;
     return c;
 }
 

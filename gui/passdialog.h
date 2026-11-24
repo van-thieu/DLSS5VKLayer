@@ -36,8 +36,11 @@ private:
 
     void writePass(uint32_t pass);
     void buildPage(uint32_t pass, QWidget* page);
+    void applyEnabled(uint32_t pass, bool on);
 
     ShmHeader* hdr = nullptr;
     QTabWidget* tabs = nullptr;
     std::array<std::vector<Row>, kMaxPasses> rows;
+    std::array<QCheckBox*, kMaxPasses> enabled{};
+    std::array<QWidget*, kMaxPasses> pageWidget{};
 };

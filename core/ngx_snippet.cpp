@@ -364,9 +364,10 @@ bool NgxLoadAndInit(NgxSnippet& s, VkInstance instance, VkPhysicalDevice pd, VkD
     ps &= ParamSetUI(s.params, "NVSDK_NGX_Parameter_CreationNodeMask", 1u, &seh);
     ps &= ParamSetUI(s.params, "NVSDK_NGX_Parameter_VisibilityNodeMask", 1u, &seh);
 
-    // Create flags: sharpening is applied by the net when the runtime float is
-    // nonzero (see NgxSetSharpness); auto-exposure keeps adaptation state in the
-    // DLL so it survives normal dynamic lighting without host-side resets.
+    // Create flags: auto-exposure keeps adaptation state in the DLL so it survives
+    // normal dynamic lighting without host-side resets. The DoSharpening bit is kept
+    // for parity with DLSS SR, but nvngx_dlssnr.dll exposes no sharpening parameter,
+    // so it does nothing here; the layer applies the GUI's Sharpness setting itself.
     unsigned int createFlags = NVSDK_NGX_DLSS_Feature_Flags_DoSharpening |
                                NVSDK_NGX_DLSS_Feature_Flags_AutoExposure;
     const char* hdrEnv = getenv("DLSSNR_HDR");
@@ -676,8 +677,10 @@ void NgxSetMotionScale(NgxSnippet& s, float scaleX, float scaleY) {
 void NgxSetSharpness(NgxSnippet& s, float sharpness) {
     if (!s.params) return;
     DWORD seh = 0;
-    // The runtime sharpness float has to reach the DLL on every evaluate dispatch: DoSharpening is
-    // enabled at create, and this is the per-frame amount it applies.
+    // Kept so the parameter block reflects the setting, but nvngx_dlssnr.dll has no
+    // "Sharpness" input: a scan of its 61 DLSSNR.* names finds none, and unlike the
+    // string-keyed block the model never reads this key. The layer applies the GUI's
+    // Sharpness as an unsharp mask on the composed frame.
     ParamSetF(s.params, "Sharpness", sharpness, &seh);
     if (Verbose()) {
         float back = 0.0f;

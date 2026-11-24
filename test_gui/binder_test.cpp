@@ -14,6 +14,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QFormLayout>
+#include <QLineEdit>
 #include <QSlider>
 #include <QWidget>
 
@@ -78,6 +79,26 @@ int main(int argc, char** argv) {
     check("reload pulls float", detail->doubleValue() == 3.25);
     check("reload pulls percent", scale->intValue() == 75);
     check("reload does not write back", hdr.controlSeq.load() == ctrl);
+
+    // The two edit-field bugs: the once-a-second reload used to overwrite a number the user was
+    // halfway through typing, and committing a typed value used to emit a second, quantised value
+    // from the slider handler and replace the text with that approximation.
+    auto* edit = detail->findChild<QLineEdit*>();
+    page.show();  // hasFocus() is only meaningful once the widget is visible
+    page.activateWindow();
+    QApplication::setActiveWindow(&page);
+    edit->setFocus();
+    QApplication::processEvents();
+    edit->setText("2.75");
+    hdr.transferStrengthBits.store(FloatToBits(1.0f));
+    binder.Reload();
+    check("reload leaves an active edit alone", edit->text() == "2.75");
+    edit->clearFocus();
+
+    edit->setText("2.37");
+    QMetaObject::invokeMethod(edit, "editingFinished");
+    check("typed value is not rounded by the slider",
+          BitsToFloat(hdr.transferStrengthBits.load()) == 2.37f && edit->text() == "2.37");
 
     std::printf("%s\n", failures ? "FAILURES" : "all binder paths ok");
     return failures ? 1 : 0;

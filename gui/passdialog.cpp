@@ -17,8 +17,9 @@ PassDialog::PassDialog(ShmHeader* header, QWidget* parent) : QDialog(parent), hd
 
     auto* root = new QVBoxLayout(this);
     auto* note = new QLabel(
-        tr("A pass follows the global settings for anything it does not tick. These are read when that "
-        "pass's feature is built, so a change takes a moment to appear."),
+        tr("Turn on \"Use per-pass settings\" for a pass to take it over from the main controls. "
+        "Inside it, a pass follows the global settings for anything it does not tick. These are read "
+        "when that pass's feature is built, so a change takes a moment to appear."),
         this);
     note->setWordWrap(true);
     root->addWidget(note);
@@ -29,6 +30,7 @@ PassDialog::PassDialog(ShmHeader* header, QWidget* parent) : QDialog(parent), hd
     for (uint32_t i = 0; i < shown; ++i) {
         auto* page = new QWidget(tabs);
         buildPage(i, page);
+        applyEnabled(i, enabled[i] && enabled[i]->isChecked());
         tabs->addTab(page, QString(tr("Pass %1")).arg(i + 1));
     }
     root->addWidget(tabs);
@@ -44,12 +46,27 @@ void PassDialog::buildPage(uint32_t pass, QWidget* page) {
 
     const uint32_t mask = hdr->pass[pass].overrideMask.load();
     PassControl& pc = hdr->pass[pass];
+    pageWidget[pass] = page;
+
+    // One toggle per pass: on means this pass uses its own settings and the main
+    // model controls are read-only; off means it follows the main controls again.
+    enabled[pass] = new QCheckBox(tr("Use per-pass settings for this pass"), page);
+    enabled[pass]->setChecked((mask & kPassEnabled) != 0);
+    enabled[pass]->setToolTip(tr("While any pass has this on, the main model controls are disabled "
+                                 "so the two sets of settings cannot disagree."));
+    auto* header = new QHBoxLayout;
+    header->addWidget(enabled[pass]);
+    form->addRow(header);
+    connect(enabled[pass], &QCheckBox::toggled, this, [this, pass](bool on) {
+        applyEnabled(pass, on);
+        writePass(pass);
+    });
 
     const auto addRow = [&](const QString& label, uint32_t bit, QWidget* value,
                             std::function<uint32_t()> read, std::function<void(uint32_t)> write) {
         auto* on = new QCheckBox(page);
         on->setChecked((mask & bit) != 0);
-        value->setEnabled(on->isChecked());
+        value->setEnabled(on->isChecked() && enabled[pass]->isChecked());
 
         auto* row = new QHBoxLayout;
         row->addWidget(on);
@@ -60,7 +77,7 @@ void PassDialog::buildPage(uint32_t pass, QWidget* page) {
         rows[pass].push_back(r);
 
         connect(on, &QCheckBox::toggled, this, [this, pass, value](bool checked) {
-            value->setEnabled(checked);
+            value->setEnabled(checked && enabled[pass]->isChecked());
             writePass(pass);
         });
     };
@@ -104,18 +121,22 @@ void PassDialog::buildPage(uint32_t pass, QWidget* page) {
             [this, pass](int) { writePass(pass); });
     addRow(tr("Preset"), kOverridePreset, preset, [preset] { return uint32_t(preset->intValue()); }, {});
 
-    auto* automask = new QCheckBox(tr("on"), page);
-    automask->setChecked(pc.autoMask.load() != 0);
-    connect(automask, &QCheckBox::toggled, this, [this, pass](bool) { writePass(pass); });
+    // A combo rather than a second checkbox: the row already has the override
+    // tick, and two checkboxes side by side made it unclear which one did what.
+    auto* automask = new QComboBox(page);
+    automask->addItems({ tr("off"), tr("on") });
+    automask->setCurrentIndex(pc.autoMask.load() ? 1 : 0);
+    connect(automask, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this, pass](int) { writePass(pass); });
     addRow(tr("Auto skin mask"), kOverrideAutoMask, automask,
-           [automask] { return automask->isChecked() ? 1u : 0u; }, {});
+           [automask] { return uint32_t(automask->currentIndex()); }, {});
 }
 
 void PassDialog::writePass(uint32_t pass) {
     if (!hdr || pass >= kMaxPasses) return;
     PassControl& pc = hdr->pass[pass];
 
-    uint32_t mask = 0;
+    uint32_t mask = enabled[pass] && enabled[pass]->isChecked() ? kPassEnabled : 0u;
     for (const Row& r : rows[pass]) {
         if (!r.on->isChecked()) continue;
         mask |= r.bit;
@@ -137,4 +158,12 @@ void PassDialog::writePass(uint32_t pass) {
     // Every one of these is latched when the pass's feature is built, so the helper has to know to
     // rebuild rather than carry on with a feature made from the old values.
     hdr->tuningSeq.fetch_add(1);
+}
+
+void PassDialog::applyEnabled(uint32_t pass, bool on) {
+    if (pass >= kMaxPasses) return;
+    for (const Row& r : rows[pass]) {
+        if (r.on) r.on->setEnabled(on);
+        if (r.value) r.value->setEnabled(on && r.on && r.on->isChecked());
+    }
 }

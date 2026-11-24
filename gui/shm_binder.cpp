@@ -51,11 +51,9 @@ SliderEdit::SliderEdit(QWidget* parent, int lo, int hi, int step, int value)
         }
     });
 
+    // editingFinished fires on Enter as well as on focus loss. A separate returnPressed handler
+    // committed the same value twice, bumping controlSeq twice and emitting a second write.
     connect(_edit, &QLineEdit::editingFinished, this, [this]() {
-        syncSliderFromEdit();
-    });
-
-    connect(_edit, &QLineEdit::returnPressed, this, [this]() {
         syncSliderFromEdit();
     });
 }
@@ -81,11 +79,9 @@ SliderEdit::SliderEdit(QWidget* parent, double lo, double hi, double step, doubl
         emit doubleChanged(sliderPosToValue(pos));
     });
 
+    // editingFinished fires on Enter as well as on focus loss. A separate returnPressed handler
+    // committed the same value twice, bumping controlSeq twice and emitting a second write.
     connect(_edit, &QLineEdit::editingFinished, this, [this]() {
-        syncSliderFromEdit();
-    });
-
-    connect(_edit, &QLineEdit::returnPressed, this, [this]() {
         syncSliderFromEdit();
     });
 }
@@ -111,9 +107,11 @@ double SliderEdit::sliderPosToValue(int pos) const {
 }
 
 void SliderEdit::syncEditFromSlider() {
-    blockSignals(true);
+    // The slider's own valueChanged signal emits the change. Only mirror the number into the field;
+    // and never do that while the user has the field focused, or their half-typed value disappears.
+    if (isEditing()) return;
+    QSignalBlocker block(_edit);
     updateEditText();
-    blockSignals(false);
 }
 
 void SliderEdit::syncSliderFromEdit() {
@@ -124,29 +122,50 @@ void SliderEdit::syncSliderFromEdit() {
     } else {
         v = double(_edit->text().toInt(&ok));
     }
-    if (!ok) return;
+    if (!ok) {
+        // Not a number: restore the last good value rather than leaving nonsense in the field.
+        QSignalBlocker block(_edit);
+        updateEditText();
+        return;
+    }
 
+    const double parsed = v;
     if (_isFloat) {
         v = std::clamp(v, _loFloat, _hiFloat);
     } else {
         v = std::clamp(v, double(_loInt), double(_hiInt));
     }
+    const int committed = _isFloat ? int(std::lround(v)) : int(v);
 
-    blockSignals(true);
-    _slider->setValue(valueToSliderPos(v));
-    updateEditText();
-    blockSignals(false);
+    // Block the slider, not `this`: QSlider::valueChanged is emitted by the slider object, so a
+    // QSignalBlocker on the parent widget does nothing and the slider handler goes on to emit a
+    // second, quantised value and rewrite the text with it. That is the "set it to 100 and it
+    // bounces to 99 or 101" bug.
+    {
+        QSignalBlocker block(_slider);
+        _slider->setValue(valueToSliderPos(v));
+    }
+
+    // Keep the number the user actually typed when it was in range. Reformatting from the slider
+    // position loses precision on wide ranges (paper white 0.01..2000: typing 100 came back as
+    // 100.01) because 10000 slider steps cannot represent every typed value exactly.
+    if (parsed != v) {
+        QSignalBlocker block(_edit);
+        if (_isFloat) _edit->setText(QString::number(v, 'g', 6));
+        else _edit->setText(QString::number(int(std::lround(v))));
+    }
 
     if (_isFloat) emit doubleChanged(v);
-    else emit intChanged(int(v));
+    else emit intChanged(committed);
 }
 
 void SliderEdit::updateEditText() {
     double v = sliderPosToValue(_slider->value());
     if (_isFloat) {
-        _edit->setText(QString::number(v, 'f', 2));
+        _edit->setText(QString::number(v, 'g', 6));
     } else {
-        _edit->setText(QString::number(int(v)));
+        // lround, not int(): a value one floating-point ulp below the integer must not show as 99.
+        _edit->setText(QString::number(int(std::lround(v))));
     }
 }
 
@@ -159,13 +178,29 @@ double SliderEdit::doubleValue() const {
 }
 
 void SliderEdit::setIntValue(int v) {
-    _slider->setValue(valueToSliderPos(double(v)));
+    if (isEditing()) return;  // a reload must not move the slider under an active edit
+    const int pos = valueToSliderPos(double(v));
+    {
+        QSignalBlocker block(_slider);
+        _slider->setValue(pos);
+    }
+    QSignalBlocker block(_edit);
     updateEditText();
+    // The slider's valueChanged is blocked above, so emit the change here. Reload callers are
+    // shielded by ShmBinder's _reloading guard; a direct caller still gets the value it asked for.
+    emit intChanged(v);
 }
 
 void SliderEdit::setDoubleValue(double v) {
-    _slider->setValue(valueToSliderPos(v));
+    if (isEditing()) return;
+    const int pos = valueToSliderPos(v);
+    {
+        QSignalBlocker block(_slider);
+        _slider->setValue(pos);
+    }
+    QSignalBlocker block(_edit);
     updateEditText();
+    emit doubleChanged(v);
 }
 
 QCheckBox* ShmBinder::AddBool(QFormLayout* form, const QString& label, Field field, const QString& tip,
@@ -196,7 +231,7 @@ QWidget* ShmBinder::AddInt(QFormLayout* form, const QString& label, Field field,
     connect(se, &SliderEdit::intChanged, this,
             [this, field, latch](int v) { Write(field, uint32_t(v < 0 ? 0 : v), latch); });
     _reloaders.push_back([this, se, field] {
-        if (!_hdr) return;
+        if (!_hdr || se->isEditing()) return;
         QSignalBlocker block(se);
         se->setIntValue(int((_hdr->*field).load()));
     });
@@ -213,7 +248,7 @@ QWidget* ShmBinder::AddFloat(QFormLayout* form, const QString& label, Field fiel
     connect(se, &SliderEdit::doubleChanged, this,
             [this, field, latch](double v) { Write(field, FloatToBits(float(v)), latch); });
     _reloaders.push_back([this, se, field] {
-        if (!_hdr) return;
+        if (!_hdr || se->isEditing()) return;
         QSignalBlocker block(se);
         se->setDoubleValue(double(BitsToFloat((_hdr->*field).load())));
     });
@@ -249,7 +284,7 @@ QWidget* ShmBinder::AddPercent(QFormLayout* form, const QString& label, Field fi
     connect(se, &SliderEdit::intChanged, this,
             [this, field, latch](int v) { Write(field, FloatToBits(float(v) / 100.0f), latch); });
     _reloaders.push_back([this, se, field] {
-        if (!_hdr) return;
+        if (!_hdr || se->isEditing()) return;
         QSignalBlocker block(se);
         se->setIntValue(int(std::lround(double(BitsToFloat((_hdr->*field).load())) * 100.0)));
     });

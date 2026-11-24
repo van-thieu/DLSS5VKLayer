@@ -1,5 +1,6 @@
 #include "mainwindow.h"
 
+#include <algorithm>
 #include <csignal>
 #include "passdialog.h"
 #include "../common/runner_discovery.h"
@@ -862,6 +863,7 @@ void MainWindow::applyDefaults() {
         se->setIntValue(int(hdr->rebuildSettleMs.load()));
     }
     updateCompositionVisibility();
+    updatePerPassLock();
     lastSettingsBlob = settingsBlob();
     profileBlob.clear();
     defaultsBlob = lastSettingsBlob;
@@ -1014,6 +1016,7 @@ void MainWindow::loadSettingsFromFile(const QString& path) {
     hdr->tuningSeq.fetch_add(1);
     if (binder) binder->Reload();
     updateCompositionVisibility();
+    updatePerPassLock();
     lastSettingsBlob = settingsBlob();
     profileBlob = lastSettingsBlob;
     updateReloadBtn();
@@ -1272,6 +1275,7 @@ void MainWindow::updateStatus() {
         se->setIntValue(int(hdr->rebuildSettleMs.load()));
     }
     updateCompositionVisibility();
+    updatePerPassLock();
 
     helperRunning = helperRunningNow();
     startBtn->setEnabled(!helperRunning);
@@ -1346,6 +1350,19 @@ void MainWindow::updateCompositionVisibility() {
     for (QWidget* w : compositionRows) compositionForm->setRowVisible(w, !bypass);
 }
 
+void MainWindow::updatePerPassLock() {
+    bool perPass = false;
+    if (hdr) {
+        const uint32_t passes = std::min<uint32_t>(ShmPasses(hdr), kMaxPasses);
+        for (uint32_t i = 0; i < passes; ++i)
+            if (hdr->pass[i].overrideMask.load() & kPassEnabled) { perPass = true; break; }
+    }
+    const auto lock = [perPass](QWidget* w) { if (w) w->setEnabled(!perPass); };
+    lock(modelStyle); lock(modelPreset); lock(modelIntensity); lock(modelStructure);
+    lock(modelTone); lock(modelSkin); lock(modelAutoMask);
+    if (perPassNote) perPassNote->setVisible(perPass);
+}
+
 // The settings, on tabs.
 //
 // Grouped the way upstream groups them, because the grouping carries meaning: what the model was
@@ -1391,24 +1408,30 @@ QWidget* MainWindow::buildSettings() {
         auto* f = group(col, tr("Neural rendering"));
         binder->AddBool(f, tr("Enabled"), &ShmHeader::enabled,
                         tr("Run the model at all. Off leaves the game's own frame untouched."));
-        binder->AddChoice(f, tr("Style"), &ShmHeader::style, { tr("Default"), tr("Natural"), tr("Cinematic") },
+        perPassNote = new QLabel(tr("Per-pass settings active — the model controls below are read-only."), this);
+        perPassNote->setWordWrap(true);
+        perPassNote->setStyleSheet("color: #fb8c00;");
+        f->addRow(perPassNote);
+        modelStyle = binder->AddChoice(f, tr("Style"), &ShmHeader::style, { tr("Default"), tr("Natural"), tr("Cinematic") },
                           tr("The model's own processing profiles."), ShmBinder::AtCreate);
-        binder->AddInt(f, tr("Preset"), &ShmHeader::preset, 0, 15, tr("The model's own render preset."),
+        modelPreset = binder->AddInt(f, tr("Preset"), &ShmHeader::preset, 0, 15, tr("The model's own render preset."),
                        ShmBinder::AtCreate);
-        binder->AddFloat(f, tr("Intensity"), &ShmHeader::intensityBits, 0.0, 4.0, 0.05,
+        modelIntensity = binder->AddFloat(f, tr("Intensity"), &ShmHeader::intensityBits, 0.0, 4.0, 0.05,
                          tr("How hard the model works."), ShmBinder::AtCreate);
-        binder->AddFloat(f, tr("Local structure"), &ShmHeader::localStructureBits, 0.0, 4.0, 0.05, "",
+        modelStructure = binder->AddFloat(f, tr("Local structure"), &ShmHeader::localStructureBits, 0.0, 4.0, 0.05, "",
                          ShmBinder::AtCreate);
-        binder->AddFloat(f, tr("Local tone"), &ShmHeader::localToneBits, 0.0, 4.0, 0.05, "",
+        modelTone = binder->AddFloat(f, tr("Local tone"), &ShmHeader::localToneBits, 0.0, 4.0, 0.05, "",
                          ShmBinder::AtCreate);
-        binder->AddFloat(f, tr("Skin structure"), &ShmHeader::skinStructureBits, -1.0, 4.0, 0.05,
+        modelSkin = binder->AddFloat(f, tr("Skin structure"), &ShmHeader::skinStructureBits, -1.0, 4.0, 0.05,
                          tr("-1 follows local structure, which is the model's own default. It is not a "
                          "strength of zero."),
                          ShmBinder::AtCreate);
-        binder->AddBool(f, tr("Auto skin mask"), &ShmHeader::autoMask, tr("The model's automatic skin mask."),
-                        ShmBinder::AtCreate);
+        modelAutoMask = binder->AddBool(f, tr("Auto skin mask"), &ShmHeader::autoMask,
+                        tr("The model's automatic skin mask."), ShmBinder::AtCreate);
         binder->AddFloat(f, tr("Sharpness"), &ShmHeader::sharpnessBits, 0.0, 1.0, 0.05,
-                         tr("The one strength the model reads every frame, so it takes effect at once."));
+                         tr("Unsharp mask applied by the layer to the composed frame, 0 off. "
+                            "DLSS-NR has no model-side sharpening parameter, so this sharpens the "
+                            "final picture locally rather than asking the model to."));
     }
     {
         auto* f = group(col, tr("Cost"));
@@ -1700,5 +1723,6 @@ binder->AddInt(f, tr("Passes"), &ShmHeader::passes, 1, int(kMaxPasses),
     col->addStretch(1);
     binder->Reload();
     updateCompositionVisibility();
+    updatePerPassLock();
     return tabs;
 }

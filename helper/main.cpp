@@ -7,6 +7,7 @@
 #include "logging.h"
 #include "../common/shm_protocol.h"
 #include "mvec_deadzone_spv.h"
+#include "blend_spv.h"
 
 #include <algorithm>
 #include <atomic>
@@ -173,6 +174,7 @@ VK_FN(vkCreateShaderModule) VK_FN(vkDestroyShaderModule)
 VK_FN(vkCreatePipelineLayout) VK_FN(vkDestroyPipelineLayout)
 VK_FN(vkCreateComputePipelines) VK_FN(vkDestroyPipeline)
 VK_FN(vkCmdBindPipeline) VK_FN(vkCmdDispatch) VK_FN(vkCmdBindDescriptorSets)
+VK_FN(vkCmdPushConstants)
 VK_FN(vkCreateDescriptorSetLayout) VK_FN(vkDestroyDescriptorSetLayout)
 VK_FN(vkCreateDescriptorPool) VK_FN(vkDestroyDescriptorPool)
 VK_FN(vkAllocateDescriptorSets) VK_FN(vkUpdateDescriptorSets)
@@ -251,6 +253,17 @@ struct VkCtx {
     VkShaderModule mvShaderFloat = nullptr;
     VkDescriptorSetLayout mvDescLayout = nullptr;
     VkPipelineLayout mvPipeLayout = nullptr;
+    // Per-pass blend: mix a pass's input with its model output so a low intensity
+    // is a gentle blend instead of the flattened picture the model produces.
+    // The storage-image format is part of the shader type, so there is one module
+    // (and one pipeline) per work format. The push constant carries the mix.
+    bool blendSupported = false;
+    VkShaderModule blendShader16F = nullptr;
+    VkShaderModule blendShader16UNorm = nullptr;
+    VkShaderModule blendShader8 = nullptr;
+    VkDescriptorSetLayout blendDescLayout = nullptr;
+    VkPipelineLayout blendPipeLayout = nullptr;
+    VkPipeline blendPipelines[3] = {};
     // Transport: the shared-memory pixel regions imported as buffers via
     // VK_EXT_external_memory_host. When the driver accepts the import, the proxy upload and the
     // answer readback are GPU copies into and out of the mapping itself -- no staging, no memcpy.
@@ -325,6 +338,7 @@ static bool CreateContext(VkCtx& c) {
     LOAD(vkCreatePipelineLayout) LOAD(vkDestroyPipelineLayout)
     LOAD(vkCreateComputePipelines) LOAD(vkDestroyPipeline)
     LOAD(vkCmdBindPipeline) LOAD(vkCmdDispatch) LOAD(vkCmdBindDescriptorSets)
+    LOAD(vkCmdPushConstants)
     LOAD(vkCreateDescriptorSetLayout) LOAD(vkDestroyDescriptorSetLayout)
     LOAD(vkCreateDescriptorPool) LOAD(vkDestroyDescriptorPool)
     LOAD(vkAllocateDescriptorSets) LOAD(vkUpdateDescriptorSets)
@@ -481,6 +495,22 @@ static bool CreateContext(VkCtx& c) {
             (f16.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT);
     }
     Log("[helper] mvec gpu compute supported=%d", int(c.mvComputeSupported));
+
+    // The blend pass needs storage images in the chain's work formats and push constants.
+    if (vkGetPhysicalDeviceFormatProperties && vkCreateShaderModule && vkCreateComputePipelines &&
+        vkCmdDispatch && vkCmdPushConstants && vkCreateDescriptorSetLayout &&
+        vkCreateDescriptorPool && vkAllocateDescriptorSets && vkUpdateDescriptorSets &&
+        kBlendSpv8Len) {
+        VkFormatProperties f8{}, fu16{}, ff16{};
+        vkGetPhysicalDeviceFormatProperties(c.physical, VK_FORMAT_R8G8B8A8_UNORM, &f8);
+        vkGetPhysicalDeviceFormatProperties(c.physical, VK_FORMAT_R16G16B16A16_UNORM, &fu16);
+        vkGetPhysicalDeviceFormatProperties(c.physical, VK_FORMAT_R16G16B16A16_SFLOAT, &ff16);
+        c.blendSupported =
+            (f8.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) &&
+            (fu16.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) &&
+            (ff16.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT);
+    }
+    Log("[helper] per-pass blend supported=%d", int(c.blendSupported));
 
     if (c.opticalFlow && c.flowTimestampBits && vkCreateQueryPool && vkCmdResetQueryPool &&
         vkCmdCopyQueryPoolResults && (vkCmdWriteTimestamp2 || vkCmdWriteTimestamp)) {
@@ -1202,7 +1232,12 @@ struct NeuralState {
     // HDR path is on), and two surfaces the chain alternates between. Two, not one, because
     // a pass must read the previous pass's answer while writing its own: with a single surface the
     // model would be reading and writing the same image.
-    GpuImage colorIn{}, workA{}, workB{}, mv{}, depth{};
+    GpuImage colorIn{}, workA{}, workB{}, blendA{}, blendB{}, mv{}, depth{};
+    // Blend pass surfaces. Two, so consecutive blended passes never read and
+    // write the same image. The descriptor set is rebuilt with the chain size.
+    VkDescriptorPool blendPool = nullptr;
+    VkDescriptorSet blendSet = nullptr;
+    VkFormat workFormat = VK_FORMAT_UNDEFINED;
     // Where the chain lands before it leaves. The passes run at higher precision than the
     // transport, so the last one is brought down to the transport's format here, once.
     GpuImage colorOut{};
@@ -1402,6 +1437,155 @@ static void DestroyMVecComputePass(VkCtx& c, OpticalFlowState& f) {
     if (f.outBitsView && vkDestroyImageView) vkDestroyImageView(c.device, f.outBitsView, nullptr);
     f.outBitsView = nullptr;
     f.gpuCompute = false;
+}
+
+// ---------------------------------------------------------------------------
+// Per-pass blend: make intensity behave like a mix instead of a flatten
+// ---------------------------------------------------------------------------
+struct BlendPush {
+    float weight;
+    uint32_t mode;  // 0 sequential mix, 1 weighted edit into the accumulator
+};
+
+// An alternative to the sequential chain: every pass contributes a share of its
+// edit against the running picture, so a low final pass cannot imprint its look
+// on the whole frame. Off by default; set DLSSNR_PASS_AVERAGE=1 in the helper
+// environment to try it.
+static bool PassAverageEnabled() {
+    static const bool v = [] {
+        const char* p = getenv("DLSSNR_PASS_AVERAGE");
+        return p && p[0] == '1';
+    }();
+    return v;
+}
+
+static int BlendFormatIndex(VkFormat f) {
+    if (f == VK_FORMAT_R8G8B8A8_UNORM) return 0;
+    if (f == VK_FORMAT_R16G16B16A16_UNORM) return 1;
+    if (f == VK_FORMAT_R16G16B16A16_SFLOAT) return 2;
+    return -1;
+}
+
+static bool EnsureBlendObjects(VkCtx& c) {
+    if (c.blendPipeLayout) return true;
+    if (!c.blendSupported) return false;
+    auto makeModule = [&](const uint32_t* code, size_t len, VkShaderModule& out) {
+        VkShaderModuleCreateInfo smci{};
+        smci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+        smci.codeSize = len * sizeof(uint32_t);
+        smci.pCode = code;
+        return vkCreateShaderModule(c.device, &smci, nullptr, &out) == VK_SUCCESS;
+    };
+    const uint32_t* codes[3] = { kBlendSpv8, kBlendSpv16UNorm, kBlendSpv16F };
+    const size_t lens[3] = { kBlendSpv8Len, kBlendSpv16UNormLen, kBlendSpv16FLen };
+    VkShaderModule* mods[3] = { &c.blendShader8, &c.blendShader16UNorm, &c.blendShader16F };
+    for (uint32_t i = 0; i < 3; ++i)
+        if (!makeModule(codes[i], lens[i], *mods[i])) return false;
+
+    VkDescriptorSetLayoutBinding bindings[3] = {};
+    for (uint32_t i = 0; i < 3; ++i) {
+        bindings[i].binding = i;
+        bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        bindings[i].descriptorCount = 1;
+        bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    }
+    VkDescriptorSetLayoutCreateInfo dli{};
+    dli.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    dli.bindingCount = 3; dli.pBindings = bindings;
+    if (vkCreateDescriptorSetLayout(c.device, &dli, nullptr, &c.blendDescLayout) != VK_SUCCESS)
+        return false;
+
+    VkPushConstantRange pcr{};
+    pcr.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    pcr.offset = 0; pcr.size = sizeof(BlendPush);
+    VkPipelineLayoutCreateInfo pli{};
+    pli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pli.setLayoutCount = 1; pli.pSetLayouts = &c.blendDescLayout;
+    pli.pushConstantRangeCount = 1; pli.pPushConstantRanges = &pcr;
+    if (vkCreatePipelineLayout(c.device, &pli, nullptr, &c.blendPipeLayout) != VK_SUCCESS)
+        return false;
+
+    for (uint32_t i = 0; i < 3; ++i) {
+        VkComputePipelineCreateInfo cpi{};
+        cpi.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        cpi.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        cpi.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        cpi.stage.module = *mods[i];
+        cpi.stage.pName = "main";
+        cpi.layout = c.blendPipeLayout;
+        if (vkCreateComputePipelines(c.device, nullptr, 1, &cpi, nullptr, &c.blendPipelines[i]) != VK_SUCCESS) {
+            Log("[blend] pipeline %u creation failed", i);
+            return false;
+        }
+    }
+    Log("[blend] per-pass mix pipelines ready (8 / 16unorm / 16f)");
+    return true;
+}
+
+static void DestroyBlendPass(NeuralState& ns) {
+    if (ns.blendPool && vkDestroyDescriptorPool) {
+        vkDestroyDescriptorPool(ns.vk.device, ns.blendPool, nullptr);
+        ns.blendPool = nullptr;
+        ns.blendSet = nullptr;
+    }
+}
+
+static bool EnsureBlendSet(NeuralState& ns) {
+    if (ns.blendPool) return true;
+    VkCtx& c = ns.vk;
+    if (!c.blendSupported || !EnsureBlendObjects(c)) return false;
+    if (BlendFormatIndex(ns.workFormat) < 0) return false;
+    VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 3 };
+    VkDescriptorPoolCreateInfo dpci{};
+    dpci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    dpci.maxSets = 1; dpci.poolSizeCount = 1; dpci.pPoolSizes = &ps;
+    if (vkCreateDescriptorPool(c.device, &dpci, nullptr, &ns.blendPool) != VK_SUCCESS) {
+        ns.blendPool = nullptr;
+        return false;
+    }
+    VkDescriptorSetAllocateInfo dsai{};
+    dsai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    dsai.descriptorPool = ns.blendPool;
+    dsai.descriptorSetCount = 1;
+    dsai.pSetLayouts = &c.blendDescLayout;
+    if (vkAllocateDescriptorSets(c.device, &dsai, &ns.blendSet) != VK_SUCCESS) {
+        DestroyBlendPass(ns);
+        return false;
+    }
+    return true;
+}
+
+// Blend `model` into `input` by `mix` and write the result to `out`. The descriptor
+// set is rewritten for every dispatch because the chain's surfaces rotate.
+static void DispatchBlend(NeuralState& ns, VkCommandBuffer cb, GpuImage& input, GpuImage& model,
+                          GpuImage& out, float weight, uint32_t mode) {
+    VkCtx& c = ns.vk;
+    const int fmt = BlendFormatIndex(ns.workFormat);
+    if (fmt < 0 || !ns.blendSet) return;
+
+    VkDescriptorImageInfo info[3] = {
+        { nullptr, input.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+        { nullptr, model.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+        { nullptr, out.view, VK_IMAGE_LAYOUT_GENERAL },
+    };
+    VkWriteDescriptorSet writes[3] = {};
+    for (uint32_t i = 0; i < 3; ++i) {
+        writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[i].dstSet = ns.blendSet;
+        writes[i].dstBinding = i;
+        writes[i].descriptorCount = 1;
+        writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        writes[i].pImageInfo = &info[i];
+    }
+    vkUpdateDescriptorSets(c.device, 3, writes, 0, nullptr);
+
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, c.blendPipelines[fmt]);
+    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, c.blendPipeLayout,
+                            0, 1, &ns.blendSet, 0, nullptr);
+    BlendPush push{ weight, mode };
+    vkCmdPushConstants(cb, c.blendPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT,
+                       0, sizeof(push), &push);
+    vkCmdDispatch(cb, (ns.w + 7) / 8, (ns.h + 7) / 8, 1);
 }
 
 // Builds the per-size compute pipeline + descriptor set. The compute pass reads
@@ -2243,6 +2427,9 @@ static bool EnsureNeural(NeuralState& ns, ShmMap& shm, uint32_t w, uint32_t h) {
     DestroyImage2D(ns.vk, ns.colorOut);
     DestroyImage2D(ns.vk, ns.workA);
     DestroyImage2D(ns.vk, ns.workB);
+    DestroyBlendPass(ns);
+    DestroyImage2D(ns.vk, ns.blendA);
+    DestroyImage2D(ns.vk, ns.blendB);
     DestroyImage2D(ns.vk, ns.mv);
     DestroyImage2D(ns.vk, ns.depth);
     ns.livePasses = 0;
@@ -2272,6 +2459,8 @@ static bool EnsureNeural(NeuralState& ns, ShmMap& shm, uint32_t w, uint32_t h) {
         !CreateImage2D(ns.vk, chainFmt, w, h, ns.colorOut) ||
         !CreateImage2D(ns.vk, workFmt, w, h, ns.workA) ||
         !CreateImage2D(ns.vk, workFmt, w, h, ns.workB) ||
+        !CreateImage2D(ns.vk, workFmt, w, h, ns.blendA) ||
+        !CreateImage2D(ns.vk, workFmt, w, h, ns.blendB) ||
         !CreateImage2D(ns.vk, VK_FORMAT_R16G16_SFLOAT, w, h, ns.mv) ||
         !CreateImage2D(ns.vk, VK_FORMAT_R32_SFLOAT, w, h, ns.depth)) {
         Log("[helper] image creation failed at %ux%u", w, h);
@@ -2308,6 +2497,15 @@ static bool EnsureNeural(NeuralState& ns, ShmMap& shm, uint32_t w, uint32_t h) {
     TransitionImage(ns.vk, ns.vk.cmdScratch, ns.workB, VK_IMAGE_LAYOUT_GENERAL, 0,
         VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+    TransitionImage(ns.vk, ns.vk.cmdScratch, ns.blendA, VK_IMAGE_LAYOUT_GENERAL, 0,
+        VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+    TransitionImage(ns.vk, ns.vk.cmdScratch, ns.blendB, VK_IMAGE_LAYOUT_GENERAL, 0,
+        VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+    ns.workFormat = workFmt;
+    if (!EnsureBlendSet(ns))
+        Log("[blend] per-pass mix unavailable; passes will use the model's raw output");
     if (!SubmitAndWait(ns.vk, ns.vk.cmdScratch)) return false;
 
     // Pass 0's feature is built with pass 0's tuning, here, because the model reads it at create.
@@ -2549,6 +2747,9 @@ static bool ProcessFrame(NeuralState& ns, ShmMap& shm) {
         DestroyImage2D(ns.vk, ns.colorIn);
         DestroyImage2D(ns.vk, ns.workA);
         DestroyImage2D(ns.vk, ns.workB);
+        DestroyBlendPass(ns);
+        DestroyImage2D(ns.vk, ns.blendA);
+        DestroyImage2D(ns.vk, ns.blendB);
         ns.hdrBuilt = wantHdr ? 1u : 0u;
         ns.ready = false;
         if (!wantHdr) ns.hdrRejected = false;  // re-arm the attempt for the next time it is asked
@@ -2702,34 +2903,72 @@ static bool ProcessFrame(NeuralState& ns, ShmMap& shm) {
     }
 
     const uint32_t passes = std::min(wanted, ns.livePasses);
-    GpuImage* last = nullptr;
+    // The chain used to be a fixed ping-pong (BindPass). With a blend step between
+    // passes that no longer works: the intermediate result can live in a blend
+    // surface, so each pass now picks its input from wherever the last one left it.
+    GpuImage* current = &ns.colorIn;
+    GpuImage* last = current;
+
+    // In average mode each active pass contributes intensity/N of an edit against
+    // the running picture, so the total strength is the mean of the pass settings
+    // rather than being set by whatever value the last pass happens to have.
+    const bool averageMode = PassAverageEnabled();
+    uint32_t activePasses = 0;
+    if (averageMode) {
+        for (uint32_t i = 0; i < passes; ++i) {
+            if (!ns.ngx.features[i]) continue;
+            if (ClampF(ShmResolvePass(shm.hdr, i).intensity, 0.0f, 1.0f) > 0.0001f) ++activePasses;
+        }
+    }
 
     for (uint32_t pass = 0; pass < passes; ++pass) {
         // A failed rebuild leaves a hole; the chain runs without that pass rather than losing the
         // frame with it.
         if (!ns.ngx.features[pass]) continue;
-        GpuImage *in = nullptr, *out = nullptr;
-        BindPass(ns, pass, in, out);
+
+        const PassTuning ps = ShmResolvePass(shm.hdr, pass);
+        // The model's own intensity flattens the picture at low values, so a pass
+        // dialed down cannot be a gentle refinement. Blend the model's answer with
+        // its input instead: 0 is an exact pass-through, 1 is the raw model output.
+        float amount = ClampF(ps.intensity, 0.0f, 2.0f);
+        if (averageMode && activePasses)
+            amount = ClampF(ps.intensity, 0.0f, 1.0f) / float(activePasses);
+        if (amount <= 0.0001f) {
+            // Its feature is being skipped; when it comes back its history is stale.
+            ns.passNeedsReset[pass] = true;
+            continue;
+        }
+
+        GpuImage* in = current;
+        GpuImage* modelOut = (current == &ns.workA) ? &ns.workB
+                           : (current == &ns.workB) ? &ns.workA : &ns.workA;
 
         NVSDK_NGX_Resource_VK rc{}, ro{}, rm{}, rd{};
         FillResource(rc, *in, false);
-        FillResource(ro, *out, true);
+        FillResource(ro, *modelOut, true);
         FillResource(rm, ns.mv, false);
         FillResource(rd, ns.depth, false);
         NgxSetResources(ns.ngx, rc, ro, rm, rd, w, h);
 
-        // Sharpness is the one strength the model reads at evaluate, so it follows the setting
-        // without a rebuild; everything else was latched when this pass's feature was built.
-        const PassTuning ps = ShmResolvePass(shm.hdr, pass);
+        // Sharpness is written to the NGX block for completeness, but DLSS-NR has no
+        // sharpening parameter, so it has no effect on the model. The layer reads the
+        // same header field and applies it as an unsharp mask on the composed frame.
         NgxSetSharpness(ns.ngx, ClampF(ps.sharpness, 0.0f, 1.0f));
 
         if (!BeginCmd(ns.vk.cmdEval)) return false;
-        TransitionImage(ns.vk, ns.vk.cmdEval, *in, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            VK_ACCESS_MEMORY_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
-            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-        TransitionImage(ns.vk, ns.vk.cmdEval, *out, VK_IMAGE_LAYOUT_GENERAL,
-            VK_ACCESS_MEMORY_READ_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
-            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        {
+            VkAccessFlags sa = 0; VkPipelineStageFlags ss = 0;
+            SrcAccessForLayout(in->layout, &sa, &ss);
+            TransitionImage(ns.vk, ns.vk.cmdEval, *in, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                sa, VK_ACCESS_SHADER_READ_BIT, ss, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        }
+        {
+            VkAccessFlags sa = 0; VkPipelineStageFlags ss = 0;
+            SrcAccessForLayout(modelOut->layout, &sa, &ss);
+            TransitionImage(ns.vk, ns.vk.cmdEval, *modelOut, VK_IMAGE_LAYOUT_GENERAL,
+                sa, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+                ss, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        }
 
         // A pass owes the model a history reset when its feature was just built, and every pass owes
         // one when the motion field changed under it -- a model told to reproject with a field that
@@ -2744,7 +2983,31 @@ static bool ProcessFrame(NeuralState& ns, ShmMap& shm) {
             return false;
         }
         if (!SubmitAndWait(ns.vk, ns.vk.cmdEval)) return false;
-        last = out;
+
+        if (amount >= 0.999f || ns.vk.blendPipelines[0] == nullptr || !ns.blendSet) {
+            current = modelOut;
+        } else {
+            GpuImage* blendOut = (current == &ns.blendA) ? &ns.blendB : &ns.blendA;
+            if (!BeginCmd(ns.vk.cmdEval)) return false;
+            {
+                VkAccessFlags sa = 0; VkPipelineStageFlags ss = 0;
+                SrcAccessForLayout(modelOut->layout, &sa, &ss);
+                TransitionImage(ns.vk, ns.vk.cmdEval, *modelOut,
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, sa, VK_ACCESS_SHADER_READ_BIT,
+                    ss, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+            }
+            {
+                VkAccessFlags sa = 0; VkPipelineStageFlags ss = 0;
+                SrcAccessForLayout(blendOut->layout, &sa, &ss);
+                TransitionImage(ns.vk, ns.vk.cmdEval, *blendOut, VK_IMAGE_LAYOUT_GENERAL,
+                    sa, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+                    ss, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+            }
+            DispatchBlend(ns, ns.vk.cmdEval, *in, *modelOut, *blendOut, amount, 0);
+            if (!SubmitAndWait(ns.vk, ns.vk.cmdEval)) return false;
+            current = blendOut;
+        }
+        last = current;
     }
     ns.mvecResetPending = false;
     ns.firstFrame = false;
@@ -2984,6 +3247,22 @@ int main() {
     Log("[helper] shutting down");
     if (ns.ngx.snippet) NgxTeardown(ns.ngx, ns.vk.device);
     vkDeviceWaitIdle(ns.vk.device);
+    DestroyBlendPass(ns);
+    DestroyImage2D(ns.vk, ns.blendA);
+    DestroyImage2D(ns.vk, ns.blendB);
+    for (uint32_t i = 0; i < 3; ++i)
+        if (ns.vk.blendPipelines[i] && vkDestroyPipeline)
+            vkDestroyPipeline(ns.vk.device, ns.vk.blendPipelines[i], nullptr);
+    if (ns.vk.blendPipeLayout && vkDestroyPipelineLayout)
+        vkDestroyPipelineLayout(ns.vk.device, ns.vk.blendPipeLayout, nullptr);
+    if (ns.vk.blendDescLayout && vkDestroyDescriptorSetLayout)
+        vkDestroyDescriptorSetLayout(ns.vk.device, ns.vk.blendDescLayout, nullptr);
+    if (ns.vk.blendShader8 && vkDestroyShaderModule)
+        vkDestroyShaderModule(ns.vk.device, ns.vk.blendShader8, nullptr);
+    if (ns.vk.blendShader16UNorm && vkDestroyShaderModule)
+        vkDestroyShaderModule(ns.vk.device, ns.vk.blendShader16UNorm, nullptr);
+    if (ns.vk.blendShader16F && vkDestroyShaderModule)
+        vkDestroyShaderModule(ns.vk.device, ns.vk.blendShader16F, nullptr);
     DestroyImage2D(ns.vk, ns.vk.proxyIn);
     DestroyImage2D(ns.vk, ns.vk.answerOut);
     if (ns.vk.proxyExportFd >= 0) close(ns.vk.proxyExportFd);

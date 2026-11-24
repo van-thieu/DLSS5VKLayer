@@ -35,6 +35,7 @@ cbuffer Params : register(b0)
                            //    PQ-decoded on the way in and PQ-encoded on the way out.
     float gColourTrust;    // maximum chroma displacement from the frame, in normalized units
     float gRatioSmooth;    // how much of the relighting ratio to take from the neighbourhood
+    float gSharpness;      // 0..1 unsharp mask applied to the composed frame by the layer
 
 
 };
@@ -1377,6 +1378,32 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     result *= normScale;
     if (gHdrProxy != 0 && gHdrTransfer != 0)
         result = LinearToPq(max(result, 0.0));
+
+    // Layer-side sharpening. The DLSS-NR model has no sharpening parameter at all (a scan of
+    // nvngx_dlssnr.dll finds no Sharpness, InSharpness or DoSharpening name), so writing "Sharpness"
+    // into the NGX block made the control look real when nothing was listening. The GUI's setting is
+    // honoured here instead: a four-neighbour unsharp mask taken from the untouched frame and added
+    // to the composed result. Working from the frame rather than recomposing every neighbour keeps
+    // this to five reads, and the frame and the result are in the same units at this point -- display
+    // referred SDR, PQ code, or linear HDR -- so the detail adds directly.
+    if (gSharpness > 0.0f && gCompareMode == 0 && !outsideFrame && !onDivider)
+    {
+        uint origW, origH;
+        gOriginal.GetDimensions(origW, origH);
+        const int2 p = int2(id.xy);
+        const int xm = max(p.x - 1, 0);
+        const int xp = min(p.x + 1, int(origW) - 1);
+        const int ym = max(p.y - 1, 0);
+        const int yp = min(p.y + 1, int(origH) - 1);
+
+        const float3 centre = max(gOriginal.Load(int3(p, 0)).rgb, 0.0);
+        const float3 blur = (max(gOriginal.Load(int3(xm, p.y, 0)).rgb, 0.0) +
+                             max(gOriginal.Load(int3(xp, p.y, 0)).rgb, 0.0) +
+                             max(gOriginal.Load(int3(p.x, ym, 0)).rgb, 0.0) +
+                             max(gOriginal.Load(int3(p.x, yp, 0)).rgb, 0.0)) * 0.25;
+
+        result += saturate(gSharpness) * (centre - blur);
+    }
 
     // The side being shown untouched takes the frame as it arrived, past every step above -- code
     // for code, transfer included.

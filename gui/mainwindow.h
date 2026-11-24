@@ -79,6 +79,7 @@ private:
     bool ensureShm();
     QWidget* buildSettings();
     void updateCompositionVisibility();
+    void updatePerPassLock();
 
     QString projectDir;
     QString helperCliPath;
@@ -124,6 +125,16 @@ private:
     bool relaunching = false;
     quint64 lastFrames = 0;
     QWidget* rebuildSpin = nullptr;
+    // Model controls that per-pass overrides can take over. Held so they can be
+    // made read-only while any pass is in per-pass mode.
+    QComboBox* modelStyle = nullptr;
+    QWidget* modelPreset = nullptr;
+    QWidget* modelIntensity = nullptr;
+    QWidget* modelStructure = nullptr;
+    QWidget* modelTone = nullptr;
+    QWidget* modelSkin = nullptr;
+    QCheckBox* modelAutoMask = nullptr;
+    QLabel* perPassNote = nullptr;
 
     ShmBinder* binder = nullptr;
     QString lastSettingsBlob;

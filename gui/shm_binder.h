@@ -56,6 +56,10 @@ class SliderEdit : public QWidget {
 
     bool isFloat() const { return _isFloat; }
 
+    // True while the text field has focus. The periodic reload must leave the field alone then --
+    // otherwise a value the user is halfway through typing is replaced under their cursor.
+    bool isEditing() const { return _edit && _edit->hasFocus(); }
+
   signals:
     void intChanged(int v);
     void doubleChanged(double v);

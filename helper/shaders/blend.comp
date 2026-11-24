@@ -1,0 +1,47 @@
+// Per-pass blend for the DLSS-NR chain.
+//
+// The model has no "amount of this pass" control that behaves like a mix: a low
+// DLSSNR.Intensity makes the feature produce a flattened picture rather than pass
+// its input through. That means a gentle final pass erases the detail the earlier
+// passes established, and per-pass tuning cannot compound the way the UI implies.
+//
+// This pass restores that meaning. After each NGX evaluate it mixes the pass's
+// input with its output, so mix=0 is an exact pass-through, mix=1 is the model's
+// raw answer, and anything between is a genuine blend. Chaining several partial
+// passes now accumulates instead of overwriting.
+//
+// The format is a compile-time choice because a storage image's format is part of
+// the GLSL type; the helper picks the module matching the chain's work format.
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+#if defined(BLEND_16F)
+#define IMG_FORMAT rgba16f
+#elif defined(BLEND_16UNORM)
+#define IMG_FORMAT rgba16
+#else
+#define IMG_FORMAT rgba8
+#endif
+
+layout(IMG_FORMAT, binding = 0) uniform readonly image2D imgIn;
+layout(IMG_FORMAT, binding = 1) uniform readonly image2D imgModel;
+layout(IMG_FORMAT, binding = 2) uniform image2D imgOut;
+
+layout(push_constant) uniform BlendParams {
+    // mode 0: dst = mix(input, model, weight)          -- sequential blend
+    // mode 1: dst = accumulator + weight * (model - input) -- weighted edit accumulate
+    float weight;
+    uint mode;
+} blend;
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(p, imageSize(imgOut)))) return;
+    vec4 a = imageLoad(imgIn, p);
+    vec4 b = imageLoad(imgModel, p);
+    vec4 result = blend.mode == 0u
+        ? mix(a, b, blend.weight)
+        : imageLoad(imgOut, p) + blend.weight * (b - a);
+    imageStore(imgOut, p, result);
+}
