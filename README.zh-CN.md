@@ -23,7 +23,15 @@ DLSS5VKLayer 是一个 Linux Vulkan 层加助手服务，它把呈现的帧转�
   放行该帧，而不是把游戏的渲染线程就此停住。
 - **GUI 的数值字段是滑块加文本输入。** 每个整数与浮点设置都是一个滑块，旁边配一个
   可编辑的数值框，而不是 spinbox。
+- **逐 Pass 设置现在会真正叠加。** 每个 Pass 会把模型输出与输入混合，因此较低的强度是温和的
+  精修，而不是把画面压平。Passes 对话框中的开关可在各活动 Pass 之间分摊强度；另一个开关可为
+  某个 Pass 启用逐 Pass 模式，并在开启时把主界面的模型控件设为只读。
+- **锐度由层本身施加。** `nvngx_dlssnr.dll` 没有锐化参数，因此 GUI 滑块驱动的是合成后画面上的
+  非锐化掩模，而不是写入一个无人读取的 NGX 键。
+- **运动单位现在真正生效。** 所选缩放会在特征创建与求值时传到模型，不再每帧被 `1.0` 覆盖。
 - **游戏配置档已发布**在 [`game_profiles/`](game_profiles/) 下，按其校准所用的 GPU 分组。
+- **浏览器视频支持在单独的项目中**：[van-thieu/DLSSNR-Video](https://github.com/van-thieu/DLSSNR-Video)。
+  本仓库只面向游戏。
 
 本 Fork 特有的环境变量：
 
@@ -46,7 +54,7 @@ DLSSNR_ALLOW_OVERLAY=1          在 Steam 的辅助进程中保持该层启用
   - 多 Pass 渲染
   - DLSS5 Native/Natural/Cinematic 预设
   - 强度、色调、结构、皮肤结构与锐度
-  - 逐 Pass 覆盖
+  - 逐 Pass 覆盖，带逐 Pass 启用开关与强度分摊开关
   - 合成运动矢量的启用、缩放模式与质量
   - 保存与载入具名的设置配置档
   - 导入 NVIDIA NGX DLL（齿轮菜单 -> **NGX binaries**）
@@ -447,14 +455,26 @@ Motion quality            Fast, Balanced (default), Quality
 Motion units              Normalised, Pixels (default), UV 0..1
 ```
 
+生成的光流场本身使用像素单位，因此 **Pixels** 是与之匹配的选项；Normalised 和 UV 会把该场
+缩放给需要这些单位的模型。
+
+**Sharpness**（Rendering → Neural rendering）是由层施加在最终合成画面上的非锐化掩模，而不是模型
+参数 —— DLSS-NR 的 DLL 没有锐化输入。
+
 列表上方的配置档下拉框保存着已存的配置档。**Save** 会按它询问的名称写入当前设置，
 该名称已预填为所选配置档的名称；条目旁的 **✕** 用于删除。配置档是
 `~/.config/dlssnr/profiles/` 下的普通 `.ini` 文件，而下拉框只在启动时填充一次，
 因此在 GUI 运行时复制进去的文件，要重启后才会出现。现成的配置档参见
 [游戏配置档](#游戏配置档)。
 
-Passes 对话框一次覆盖一个 Pass 的设置，逐字段进行：每一行都有自己的
-复选框，未勾选的字段会沿用全局值，而不是重新声明它。
+**Per-pass settings** 对话框顶部有 **Average pass strengths** 开关：开启时，每个活动 Pass
+贡献 `intensity / 活动 Pass 数`，这样最后一个较温和的 Pass 就不会决定整幅画面的强度；关闭时，
+每个 Pass 直接使用自己的强度。
+
+每个 Pass 标签页都有 **Use per-pass settings for this pass**。开启后该 Pass 不再跟随主控件，
+主界面的模型控件会变为只读（并有说明文字），避免两组设置互相冲突。标签页内部是稀疏配置：
+每一行都有自己的复选框，未勾选的字段沿用全局值，而不是重新声明它。**Auto skin mask** 使用
+off/on 下拉框，因为该行已经有覆盖复选框了。
 
 设置会写入共享内存，并在下一个被处理的帧上生效。关闭 GUI 会请求停止助手，因此无需手动停止助手。
 
@@ -518,7 +538,7 @@ DLSSNR_SMOKE_FRAMES=5 \
 ```text
 [mvec] NV optical flow enabled ... gpu_convert=1 dir=1 xfer=1
 [params] evaluate contract set: ok ... UseAutoMask=1 ... depth=null
-[params] MVecScaleX=1.000000 MVecScaleY=1.000000
+[params] MVecScaleX=<所选模式> MVecScaleY=<所选模式>
 [mvec] first optical-flow pass completed
 [time] passes=1 ... flow=... eval=... total=... ms
 ```

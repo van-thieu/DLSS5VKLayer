@@ -25,8 +25,18 @@ rest of this README describes the fork rather than upstream.
   thread for the rest of the session.
 - **GUI numeric fields are a slider plus a text input.** Every integer and float setting is a
   slider with an editable number beside it, rather than a spinbox.
+- **Per-pass settings really compound.** Each pass blends its model output with its input, so a
+  low intensity is a gentle refinement instead of a flattened picture. A toggle in the Passes
+  dialog shares strength across active passes; another enables per-pass mode for a pass and makes
+  the main model controls read-only while it is on.
+- **Sharpness is applied by the layer.** `nvngx_dlssnr.dll` has no sharpening parameter, so the
+  GUI slider drives an unsharp mask on the composed frame rather than an NGX key nobody reads.
+- **Motion units are effective.** The selected scale now reaches the model at create and evaluate
+  time instead of being overwritten with `1.0` on every frame.
 - **Game profiles are published** under [`game_profiles/`](game_profiles/), grouped by the GPU they
   were calibrated on.
+- **Browser-video support lives in a separate project**,
+  [van-thieu/DLSSNR-Video](https://github.com/van-thieu/DLSSNR-Video). This repository is for games.
 
 Fork-specific environment controls:
 
@@ -49,7 +59,7 @@ DLSSNR_ALLOW_OVERLAY=1          keep the layer active in Steam's auxiliary proce
   - multi-pass rendering
   - DLSS5 Native/Natural/Cinematic presets
   - intensity, tone, structure, skin structure, and sharpness
-  - per-pass overrides
+  - per-pass overrides with a per-pass enable switch and shared-strength averaging
   - synthetic motion-vector enable, scale mode, and quality
   - saving and loading named setting profiles
   - importing the NVIDIA NGX DLLs (gear menu -> **NGX binaries**)
@@ -456,14 +466,27 @@ Motion quality            Fast, Balanced (default), Quality
 Motion units              Normalised, Pixels (default), UV 0..1
 ```
 
+The generated optical-flow field is in pixel units, so **Pixels** is the matching choice;
+Normalised and UV scale the field for a model that expects those units.
+
+**Sharpness** (Rendering → Neural rendering) is an unsharp mask applied by the layer to the final
+composed frame, not a model parameter — the DLSS-NR DLL has no sharpening input.
+
 The profile dropdown above the list holds saved profiles. **Save** writes the current settings under
 the name it asks for, pre-filled with the selected profile's name; the **✕** beside an entry
 deletes it. Profiles live in `~/.config/dlssnr/profiles/` as plain `.ini` files, and the dropdown is
 filled once at startup, so a file copied in while the GUI is running appears only after a restart.
 See [Game Profiles](#game-profiles) for ready-made ones.
 
-The Passes dialog overrides settings for one pass at a time, field by field: each row has its own
-checkbox, and a field left unchecked follows the global value rather than restating it.
+The **Per-pass settings** dialog has a toggle at the top, **Average pass strengths**: on, each
+active pass contributes `intensity / active passes` to the chain, so a gentle final pass cannot set
+the whole picture's strength; off, each pass uses its own intensity directly.
+
+Each pass tab has **Use per-pass settings for this pass**. Turn it on to take that pass over from
+the main controls: the main model controls then become read-only (with a note explaining why), so
+the two sets cannot disagree. Inside a tab, fields are sparse: each row has its own checkbox, and a
+field left unchecked follows the global value rather than restating it. **Auto skin mask** is an
+off/on combo, since the row already has an override checkbox.
 
 Settings are written to shared memory and take effect on the next processed frame. Closing the GUI requests a helper stop, so the helper does not need to be stopped manually.
 
@@ -527,7 +550,7 @@ Expected helper log lines:
 ```text
 [mvec] NV optical flow enabled ... gpu_convert=1 dir=1 xfer=1
 [params] evaluate contract set: ok ... UseAutoMask=1 ... depth=null
-[params] MVecScaleX=1.000000 MVecScaleY=1.000000
+[params] MVecScaleX=<selected mode> MVecScaleY=<selected mode>
 [mvec] first optical-flow pass completed
 [time] passes=1 ... flow=... eval=... total=... ms
 ```
