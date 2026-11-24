@@ -5,7 +5,6 @@
 #include "passdialog.h"
 #include "../common/runner_discovery.h"
 #include "shm_binder.h"
-#include "videopage.h"
 #include "translations.h"
 #include "../layer_linux/src/hotkey.h"
 
@@ -262,20 +261,15 @@ void ProfileDelegate::paint(QPainter* painter, const QStyleOptionViewItem& optio
     painter->restore();
 }
 
-MainWindow::MainWindow(bool videoMode_, QWidget* parent)
-    : QWidget(parent), videoMode(videoMode_) {
-    setWindowTitle(videoMode ? tr("DLSS5 Video") : tr("DLSS5VKLayer Helper"));
+MainWindow::MainWindow(QWidget* parent) : QWidget(parent) {
+    setWindowTitle(tr("DLSS5VKLayer Helper"));
 
     projectDir = findProjectDir();
     helperCliPath = findHelperCli();
     configFilePath = configPath();
     loadConfig();
-    if (videoMode) {
-        windowW = 1000;
-        windowH = 820;
-    }
     resize(windowW, windowH);
-    setMinimumSize(videoMode ? 860 : 520, videoMode ? 720 : 480);
+    setMinimumSize(520, 480);
 
     // Softened on purpose: a full-strength palette border behind every group and tab reads as a
     // wireframe over the controls. A translucent hairline and a quiet selected-tab pill carry the
@@ -301,20 +295,6 @@ MainWindow::MainWindow(bool videoMode_, QWidget* parent)
     if (logPath.isEmpty()) logPath = defaultLogPath();
     ensureShm();
     restoreSettings();
-    if (videoMode && !QFile::exists(configPath())) {
-        // First run of the video UI: start from the low-cost video values rather than whatever the
-        // last game session left in the shared header.
-        if (hdr) {
-            hdr->workingScaleBits.store(FloatToBits(1.0f));
-            hdr->mvecEnabled.store(0);
-            hdr->sdr16Multipass.store(0);
-            hdr->reversibleMode.store(kReversibleKnee);
-            hdr->style.store(2);
-            hdr->intensityBits.store(FloatToBits(1.32f));
-            hdr->controlSeq.fetch_add(1);
-            hdr->tuningSeq.fetch_add(1);
-        }
-    }
 
     auto* root = new QVBoxLayout(this);
 
@@ -322,8 +302,7 @@ MainWindow::MainWindow(bool videoMode_, QWidget* parent)
     statusLabel->setTextFormat(Qt::RichText);
     root->addWidget(statusLabel);
 
-    runnerForm = new QWidget(this);
-    auto* runnerLayout = new QFormLayout(runnerForm);
+    auto* runnerForm = new QFormLayout;
     runnerCombo = new QComboBox(this);
     runnerPathEdit = new QLineEdit(this);
     browseRunnerBtn = new QPushButton(tr("Browse..."), this);
@@ -339,12 +318,9 @@ MainWindow::MainWindow(bool videoMode_, QWidget* parent)
         "because the model is a Windows DLL.\n"
         "This is not what the game runs under -- native Linux games work with this set too.")));
     runnerPathEdit->setToolTip(runnerCombo->toolTip());
-    runnerLayout->addRow(tr("Runner"), runnerCombo);
-    runnerLayout->addRow(tr("Path"), runnerPathRow);
-    root->addWidget(runnerForm);
-    // In video mode the helper runner/path are implementation details of the Windows helper under
-    // Wine; the user only needs the status and the Start button.
-    if (videoMode) runnerForm->hide();
+    runnerForm->addRow(tr("Runner"), runnerCombo);
+    runnerForm->addRow(tr("Path"), runnerPathRow);
+    root->addLayout(runnerForm);
 
     auto* buttons = new QHBoxLayout;
     startBtn = new QPushButton(tr("Start helper"), this);
@@ -553,28 +529,15 @@ MainWindow::~MainWindow() {
 }
 
 void MainWindow::closeEvent(QCloseEvent* event) {
-    // In video mode the player is stopped by the VideoPage destructor, after the window system has
-    // finished with this widget; stopping it here nested inside closeAllWindows is what crashed.
-    if (videoPage && !videoMode) videoPage->stopMpv();
     if (statusTimer) statusTimer->stop();
+    if (hdr) hdr->quit.store(1);
     windowW = width();
     windowH = height();
     saveConfig();
-    // The video app is a player, not the helper's lifecycle owner: closing it leaves the helper
-    // running for a game. The settings GUI keeps its long-standing stop-on-close behaviour.
-    if (videoMode) {
-        QWidget::closeEvent(event);
-        return;
-    }
-    if (hdr) hdr->quit.store(1);
     if (helperCliPath.isEmpty()) helperCliPath = findHelperCli();
     // Reopening into another language must not take the helper down with it.
     if (!relaunching && !helperCliPath.isEmpty()) QProcess::startDetached(helperCliPath, {"stop"});
     QWidget::closeEvent(event);
-}
-
-void MainWindow::playVideo(const QString& source) {
-    if (videoPage) videoPage->play(source);
 }
 
 bool MainWindow::eventFilter(QObject* obj, QEvent* event) {
@@ -656,23 +619,15 @@ QString MainWindow::findHelperCli() const {
 }
 
 QString MainWindow::configPath() const {
-    // Video mode keeps its own config so a game profile path in the main config is never picked up
-    // by the player window. The settings themselves are still the shared SHM values.
-    if (videoMode) {
-        const QString base = qEnvironmentVariable("XDG_CONFIG_HOME", QDir::homePath() + "/.config");
-        return base + "/dlssnr/video-config.ini";
-    }
     // The one place this path is worked out; dlssnr::StartupLocale() reads the same file to pick the
     // language before this window exists.
     return dlssnr::ConfigFilePath();
 }
 
-// The desktop helper saves/loads game profiles; the video player saves/loads video profiles. They
-// were shared once, which is how a game profile got overwritten by a video preset.
+// Returns ~/.config/dlssnr/profiles/ for saving/loading setting profiles.
 QString MainWindow::profilesDir() const {
-    const QString base = qEnvironmentVariable("XDG_CONFIG_HOME", QDir::homePath() + "/.config");
-    const QString dir = base + "/dlssnr/" +
-                        (videoMode ? QStringLiteral("video-profiles") : QStringLiteral("profiles"));
+    const QString dir = qEnvironmentVariable("XDG_CONFIG_HOME", QDir::homePath() + "/.config")
+                        + "/dlssnr/profiles";
     QDir().mkpath(dir);
     return dir;
 }
@@ -1420,22 +1375,6 @@ void MainWindow::updatePerPassLock() {
 QWidget* MainWindow::buildSettings() {
     auto* tabs = new QTabWidget(this);
     binder = new ShmBinder(hdr, tabs);
-
-    if (videoMode) {
-        // The player is a separate top-level window so the settings stay usable while watching.
-        // mpv's --wid follows this widget's X11 window; both windows are XWayland windows.
-        videoPage = new VideoPage(hdr, this, true);
-        videoPage->setWindowFlags(Qt::Window);
-        videoPage->setWindowTitle(tr("DLSS5 Video Player"));
-        videoPage->resize(760, 780);
-        videoPage->show();
-    } else {
-        videoPage = new VideoPage(hdr, tabs);
-        tabs->insertTab(0, videoPage, tr("Video"));
-    }
-    connect(videoPage, &VideoPage::settingsChanged, this, [this] {
-        if (binder) binder->Reload();
-    });
 
     // Every tab scrolls: the Rendering tab outgrows any honest window height, and a tab that cannot
     // scroll just silently hides its bottom groups.

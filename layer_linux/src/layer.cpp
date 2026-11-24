@@ -505,13 +505,6 @@ struct SwapchainState {
     // not moved since means the application submitted nothing new to that queue for this image,
     // so the capture copy cannot be ordered behind the frame's work by queue order alone.
     uint64_t submitsAtLastPresent = 0;
-    // Chrome recreates swapchains when a tab reloads. Presenting through one while it is still
-    // settling makes vkAcquireNextImageKHR hang and Chrome kills the GPU process. Skip the first few
-    // presents of every new swapchain; the application's own frames get through untouched.
-    uint32_t warmup = 0;
-    // Last ROI this swapchain processed. A scroll feed changes the video rect when the next clip
-    // lands; rebuilding the model across that transition has been seen to hang Chrome's GPU.
-    uint32_t lastRoiX = 0, lastRoiY = 0, lastRoiW = 0, lastRoiH = 0;
 
     // The pass. Owns every surface it needs, including the transport pair -- the shared-memory
     // regions themselves when the driver will import them, host-visible staging when it will not.
@@ -606,43 +599,21 @@ struct PrimarySwap {
     VkDevice device = VK_NULL_HANDLE;
     VkSwapchainKHR swapchain = VK_NULL_HANDLE;
     uint64_t area = 0;
-    // Chrome recreates same-size swapchains. Without a freshness check, a stale claim on an old
-    // swapchain blocks the new one forever because its area is never larger.
-    double lastPresentMs = 0.0;
 };
 static PrimarySwap g_primary;
 // Its own mutex, never nested with dc->lock or g_stateMutex, so the lock order in the present hook
 // cannot invert against the device hooks.
 static std::mutex g_primaryMutex;
 
-// Destroying a swapchain is Chrome's reload path. Doing layer work across that transition makes
-// vkAcquireNextImageKHR hang and Chrome kills the GPU process. Present raw briefly after any
-// swapchain destruction so the transition settles before the pass resumes.
-static std::atomic<uint64_t> g_suppressUntilMs{0};
-// One grace period per GPU-process lifetime. A freshly restarted GPU process is still creating
-// swapchains and surfaces; capturing during that window has been observed to coincide with
-// vkAcquireNextImageKHR hangs. Let Chrome finish reinitializing before we touch its images.
-static std::atomic<bool> g_processGraceSet{false};
-
 // Adopts a larger swapchain; a present from anything else passes through untouched.
 static bool ClaimPrimary(VkDevice device, VkSwapchainKHR swapchain, uint32_t w, uint32_t h) {
     std::lock_guard<std::mutex> lk(g_primaryMutex);
     const uint64_t area = uint64_t(w) * h;
-    const double now = NowMs();
-    if (g_primary.swapchain == swapchain && g_primary.device == device) {
-        g_primary.lastPresentMs = now;
-        return true;
-    }
-    // A different swapchain of equal size may take over once the old primary has stopped
-    // presenting. Chrome presents through a sequence of same-size swapchains; without the
-    // freshness check the first one keeps the claim and every later one is "not primary".
-    if (g_primary.swapchain != VK_NULL_HANDLE && area <= g_primary.area) {
-        if (now - g_primary.lastPresentMs < 1000.0) return false;
-    }
+    if (g_primary.swapchain == swapchain && g_primary.device == device) return true;
+    if (g_primary.swapchain != VK_NULL_HANDLE && area <= g_primary.area) return false;
     g_primary.device = device;
     g_primary.swapchain = swapchain;
     g_primary.area = area;
-    g_primary.lastPresentMs = now;
     return true;
 }
 
@@ -802,10 +773,6 @@ static bool LayerEnabled() {
 static VKAPI_ATTR VkResult VKAPI_CALL Hook_CreateInstance(
     const VkInstanceCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator,
     VkInstance* pInstance) {
-    if (!g_processGraceSet.exchange(true)) {
-        g_suppressUntilMs.store(uint64_t(NowMs()) + 5000);
-        Log("[layer] GPU process starting — presenting raw for 5s while Chrome initializes");
-    }
     auto* link = const_cast<VkLayerInstanceCreateInfo*>((const VkLayerInstanceCreateInfo*)pCreateInfo->pNext);
     while (link && !(link->sType == VK_STRUCTURE_TYPE_LOADER_INSTANCE_CREATE_INFO &&
                      link->function == VK_LAYER_LINK_INFO))
@@ -1430,7 +1397,6 @@ static VKAPI_ATTR void VKAPI_CALL Hook_DestroySwapchainKHR(VkDevice device,
         if (it != g_devices.end()) dc = it->second;
     }
     if (!dc) return;
-    g_suppressUntilMs.store(uint64_t(NowMs()) + 4000);
     ReleasePrimary(device, swapchain);
     LifecycleGuard lifecycle(dc);
     std::unique_lock<std::mutex> lk(dc->lock);
@@ -1574,17 +1540,6 @@ static bool ProcessPresent(DeviceChain* dc, SwapchainState& sc, VkQueue queue,
     }
 
     dlssnr::FrameSettings fs = dlssnr::FrameSettings::Read(dc->shm.hdr);
-
-    // A scroll feed changes the video element's size/position from clip to clip. Let Chrome's
-    // compositor and the helper's model settle before doing GPU work on the new rectangle.
-    if (fs.roiEnabled && fs.roiW && fs.roiH) {
-        if (sc.lastRoiW && (sc.lastRoiX != fs.roiX || sc.lastRoiY != fs.roiY ||
-                            sc.lastRoiW != fs.roiW || sc.lastRoiH != fs.roiH)) {
-            g_suppressUntilMs.store(uint64_t(NowMs()) + 2500);
-        }
-        sc.lastRoiX = fs.roiX; sc.lastRoiY = fs.roiY;
-        sc.lastRoiW = fs.roiW; sc.lastRoiH = fs.roiH;
-    }
     // A repaint holds the captured frame, whatever the setting says.
     //
     // Held, the frame is not read back from the swapchain while the encode, the model and the resolve
@@ -1614,9 +1569,7 @@ static bool ProcessPresent(DeviceChain* dc, SwapchainState& sc, VkQueue queue,
     // into and out of.
     if (dc->shm.hdr && ShmOpen(dc->shm)) {
         uint32_t mw = 0, mh = 0;
-        uint32_t frameW = sc.width, frameH = sc.height;
-        dlssnr::EffectiveFrameExtent(sc.width, sc.height, fs, frameW, frameH);
-        dlssnr::Composition::ModelExtent(frameW, frameH, fs, mw, mh);
+        dlssnr::Composition::ModelExtent(sc.width, sc.height, fs, mw, mh);
         if (ShmMapFrames(dc->shm, size_t(mw) * mh * (hdrProxy ? 8 : 4)))
             sc.comp->SetTransport(dc->shm.inPixels, dc->shm.outPixels, dc->shm.mappedFrameBytes);
         else
@@ -1885,30 +1838,6 @@ static VKAPI_ATTR VkResult VKAPI_CALL Hook_QueuePresentKHR(VkQueue queue,
             if (sit == dc->swapchains.end()) continue;
             SwapchainState& sc = sit->second;
             if (sc.passThrough || pPresentInfo->pImageIndices[i] >= sc.images.size()) continue;
-            if (NowMs() < double(g_suppressUntilMs.load())) continue;   // swapchain transition; present raw
-            // A browser presents several surfaces. The extension's ROI is in the coordinate space of
-            // one specific swapchain (the window size it measured). Never apply it to a differently
-            // sized surface -- the same x/y would land on different pixels and the edit would appear
-            // shifted. Log once per mismatch so a stuck claim is visible, then present this one raw.
-            if (dc->shm.hdr && dc->shm.hdr->roiEnabled.load() &&
-                dc->shm.hdr->roiSwapW.load() && dc->shm.hdr->roiSwapH.load()) {
-                const uint32_t wantW = dc->shm.hdr->roiSwapW.load();
-                const uint32_t wantH = dc->shm.hdr->roiSwapH.load();
-                const int dw = int(sc.width) - int(wantW);
-                const int dh = int(sc.height) - int(wantH);
-                if (dw > 2 || dw < -2 || dh > 2 || dh < -2) {
-                    static std::atomic<uint32_t> mismatch{0};
-                    const uint32_t k = mismatch.fetch_add(1);
-                    if (k < 3)
-                        Log("[layer] swapchain %ux%u is not the ROI's %ux%u; presenting it raw",
-                            sc.width, sc.height, wantW, wantH);
-                    continue;
-                }
-            }
-            if (sc.warmup < 30) {
-                ++sc.warmup;
-                continue;   // let a freshly created swapchain settle before touching its images
-            }
             // One swapchain drives the channel; the rest present raw. See ClaimPrimary.
             if (!ClaimPrimary(dc->self, pPresentInfo->pSwapchains[i], sc.width, sc.height)) {
                 static std::atomic<uint32_t> n{0};
