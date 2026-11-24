@@ -86,6 +86,11 @@ FrameSettings FrameSettings::Read(const ShmHeader* h) {
     s.downscaler = h->scalingDownscaler.load();
     s.compositionBypass = h->compositionBypass.load();
     s.sharpness = BitsToFloat(h->sharpnessBits.load());
+    s.roiEnabled = h->roiEnabled.load();
+    s.roiX = h->roiX.load();
+    s.roiY = h->roiY.load();
+    s.roiW = h->roiW.load();
+    s.roiH = h->roiH.load();
     {
         // DLSSNR_SETTLE, in the same hundredths, so the ramp can be swept from a launch option --
         // including back to 100, which is the behaviour before it existed.
@@ -700,6 +705,16 @@ bool Composition::Prepare(uint32_t width, uint32_t height, VkFormat swapchainFor
                           bool linearHdr, bool hdrProxy, uint32_t hdrTransfer) {
     if (!_usable) return false;
 
+    _fullWidth = width;
+    _fullHeight = height;
+    uint32_t effW = width, effH = height;
+    EffectiveFrameExtent(width, height, s, effW, effH);
+    _useRoi = (effW != width || effH != height);
+    _roiX = _useRoi ? std::min<uint32_t>(s.roiX, width - 1) : 0;
+    _roiY = _useRoi ? std::min<uint32_t>(s.roiY, height - 1) : 0;
+    width = effW;
+    height = effH;
+
     VkFormat work = CompositionFormat(swapchainFormat);
     if (work == VK_FORMAT_UNDEFINED) {
         _reason = "unsupported swapchain format";
@@ -778,10 +793,14 @@ bool Composition::Prepare(uint32_t width, uint32_t height, VkFormat swapchainFor
         _hdrTransfer == hdrTransfer && _scalerFilter == s.downscaler && _frame.image)
         return true;
 
-    Log("[comp] building %ux%u, model %ux%u, %s%s%s", width, height, modelW, modelH,
+    Log("[comp] building %ux%u, model %ux%u, %s%s%s%s", width, height, modelW, modelH,
         linearHdr ? "linear HDR" : "display-referred",
         hdrProxy ? (hdrTransfer ? ", float16 proxy (PQ in)" : ", float16 proxy") : "",
-        superSample ? " (supersampling)" : "");
+        superSample ? " (supersampling)" : "",
+        _useRoi ? " (roi)" : "");
+    if (_useRoi)
+        Log("[comp] ROI %u,%u %ux%u of swapchain %ux%u", _roiX, _roiY, width, height,
+            _fullWidth, _fullHeight);
 
     if (superSample) {
         // Said out loud because it is the transport, not the GPU, that decides whether this is
@@ -1128,6 +1147,25 @@ void Composition::CopyWholeImage(VkCommandBuffer cb, VkImage src, VkImageLayout 
     _vk->vkCmdCopyImage(cb, src, srcLayout, dst, dstLayout, 1, &copy);
 }
 
+// A cropped copy in or out of the swapchain. The ROI path only uses this on the byte-identical copy
+// path; a format-blitting swapchain falls back to a whole-image transfer rather than resampling an
+// offset rectangle.
+void Composition::CopyImageRegion(VkCommandBuffer cb, VkImage src, VkImageLayout srcLayout, VkImage dst,
+                                  VkImageLayout dstLayout, uint32_t w, uint32_t h,
+                                  uint32_t srcX, uint32_t srcY, uint32_t dstX, uint32_t dstY) {
+    if (_blitSwapchain) {
+        CopyWholeImage(cb, src, srcLayout, dst, dstLayout, w, h);
+        return;
+    }
+    VkImageCopy copy{};
+    copy.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+    copy.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+    copy.srcOffset = { (int32_t) srcX, (int32_t) srcY, 0 };
+    copy.dstOffset = { (int32_t) dstX, (int32_t) dstY, 0 };
+    copy.extent = { w, h, 1 };
+    _vk->vkCmdCopyImage(cb, src, srcLayout, dst, dstLayout, 1, &copy);
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -1247,8 +1285,9 @@ bool Composition::RecordCapture(VkCommandBuffer cb, VkImage swapchainImage, cons
         TransitionSwapchain(cb, swapchainImage, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                             VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
         Transition(cb, _frame, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-        CopyWholeImage(cb, swapchainImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, _frame.image,
-                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, _width, _height);
+        CopyImageRegion(cb, swapchainImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, _frame.image,
+                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, _width, _height,
+                        _roiX, _roiY, 0, 0);
 
         // Straight back, so that every path out of this leg -- including the ones that give up --
         // leaves the image in the layout the present engine requires.
@@ -1461,8 +1500,9 @@ bool Composition::RecordCompose(VkCommandBuffer cb, VkImage swapchainImage, cons
         Transition(cb, *answer, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
         TransitionSwapchain(cb, swapchainImage, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-        CopyWholeImage(cb, answer->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, swapchainImage,
-                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, _width, _height);
+        CopyImageRegion(cb, answer->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, swapchainImage,
+                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, _width, _height,
+                        0, 0, _roiX, _roiY);
         TransitionSwapchain(cb, swapchainImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                             VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 
@@ -1547,8 +1587,9 @@ bool Composition::RecordCompose(VkCommandBuffer cb, VkImage swapchainImage, cons
 
     Transition(cb, _composed, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     TransitionSwapchain(cb, swapchainImage, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-    CopyWholeImage(cb, _composed.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, swapchainImage,
-                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, _width, _height);
+    CopyImageRegion(cb, _composed.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, swapchainImage,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, _width, _height,
+                    0, 0, _roiX, _roiY);
     TransitionSwapchain(cb, swapchainImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 
     // The pair, taken here because this is the one place that holds both the frame as the game

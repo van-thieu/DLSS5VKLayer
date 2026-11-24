@@ -6,6 +6,7 @@
 #include <QFileInfo>
 #include <QLibraryInfo>
 #include <QLocale>
+#include <QTimer>
 #include <QTranslator>
 
 // The locale comes from DLSSNR_LANG, else the `language=` line the interface writes into its
@@ -46,9 +47,34 @@ static void installTranslations(QApplication& app) {
 }
 
 int main(int argc, char** argv) {
+    bool videoMode = false;
+    QString videoUrl;
+    int quitAfterMs = 0;
+    for (int i = 1; i < argc; ++i) {
+        const QString a = QString::fromLocal8Bit(argv[i]);
+        if (a == QLatin1String("--video")) {
+            videoMode = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-')
+                videoUrl = QString::fromLocal8Bit(argv[++i]);
+        } else if (a == QLatin1String("--quit-after") && i + 1 < argc) {
+            quitAfterMs = qMax(0, QString::fromLocal8Bit(argv[++i]).toInt()) * 1000;
+        }
+    }
+    if (videoMode) {
+        // The embedded mpv renders through an X11 surface; XWayland provides it on a Wayland
+        // session. The layer needs the same X11 Vulkan instance, so both are pinned here.
+        qputenv("QT_QPA_PLATFORM", "xcb");
+        qunsetenv("WAYLAND_DISPLAY");
+        qputenv("VKLayer_DLSS5", "1");
+        qputenv("VK_INSTANCE_LAYERS", "VK_LAYER_NV_dlssnr");
+    }
+
     QApplication app(argc, argv);
     installTranslations(app);
-    MainWindow w;
+    MainWindow w(videoMode);
     w.show();
+    if (!videoUrl.isEmpty())
+        QTimer::singleShot(250, &w, [&w, videoUrl] { w.playVideo(videoUrl); });
+    if (quitAfterMs > 0) QTimer::singleShot(quitAfterMs, &app, &QCoreApplication::quit);
     return app.exec();
 }
