@@ -95,7 +95,8 @@ void NgxSetHdr(NgxSnippet& s, bool want);
 // just chosen. It is applied last, immediately before the feature is built.
 bool NgxLoadAndInit(NgxSnippet& s, VkInstance instance, VkPhysicalDevice pd, VkDevice device,
                     uint32_t width, uint32_t height, VkCommandBuffer recordingCmd,
-                    const NgxTuning& tuning);
+                    const NgxTuning& tuning,
+                    float mvecScaleX = 1.0f, float mvecScaleY = 1.0f);
 
 bool NgxCreatePass(NgxSnippet& s, uint32_t pass, uint32_t width, uint32_t height,
                    VkCommandBuffer recordingCmd);

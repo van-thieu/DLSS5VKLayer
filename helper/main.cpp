@@ -2510,7 +2510,11 @@ static bool EnsureNeural(NeuralState& ns, ShmMap& shm, uint32_t w, uint32_t h) {
     NgxTuning first = TuningFor(shm.hdr, 0);
 
     if (!BeginCmd(ns.vk.cmdCreate)) return false;
-    bool ok = NgxLoadAndInit(ns.ngx, ns.vk.instance, ns.vk.physical, ns.vk.device, w, h, ns.vk.cmdCreate, first);
+    float mvSx = 2.0f / float(w), mvSy = 2.0f / float(h);
+    if (ns.mvecScaleMode == kMVecPixels) { mvSx = 1.0f; mvSy = 1.0f; }
+    else if (ns.mvecScaleMode == kMVecUv01) { mvSx = 1.0f / float(w); mvSy = 1.0f / float(h); }
+    bool ok = NgxLoadAndInit(ns.ngx, ns.vk.instance, ns.vk.physical, ns.vk.device, w, h,
+                             ns.vk.cmdCreate, first, mvSx, mvSy);
     if (!SubmitAndWait(ns.vk, ns.vk.cmdCreate) || !ok) {
         if (ns.hdrBuilt) {
             // The float contract was refused. That is the model saying no, not the model being

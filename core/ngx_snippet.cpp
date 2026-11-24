@@ -188,7 +188,7 @@ static void RegisterPeRange(const char* name, HMODULE mod) {
 // ---------------------------------------------------------------------------
 bool NgxLoadAndInit(NgxSnippet& s, VkInstance instance, VkPhysicalDevice pd, VkDevice device,
                     uint32_t width, uint32_t height, VkCommandBuffer recordingCmd,
-                    const NgxTuning& tuning) {
+                    const NgxTuning& tuning, float mvecScaleX, float mvecScaleY) {
     if (s.disabled) return false;
     s.binDir = ResolveBinDir();
     if (s.binDir.empty()) { Log("[ngx] nvngx_dlssnr.dll not found (set DLSSNR_BIN_DIR)"); s.disabled = true; return false; }
@@ -445,6 +445,16 @@ bool NgxLoadAndInit(NgxSnippet& s, VkInstance instance, VkPhysicalDevice pd, VkD
         Log("[params] tonemap hint: %s (featureFlags=%#x)", hdrPath ? "HDR" : "SDR", s.featureFlags);
     }
 
+    // Motion units belong to the create contract too: set them before pass 0 is
+    // built, so a feature latched at create gets the selected mode as well.
+    {
+        DWORD seh2 = 0;
+        ParamSetF(s.params, "DLSSNR.MVecScaleX", mvecScaleX, &seh2);
+        ParamSetF(s.params, "DLSSNR.MVecScaleY", mvecScaleY, &seh2);
+        Log("[params] create MVecScaleX=%.6f MVecScaleY=%.6f (seh=%#x)",
+            mvecScaleX, mvecScaleY, seh2);
+    }
+
     // Last, so neither the create contract above nor the tonemap hint can overwrite it. Its preset
     // write in particular used to land after everything the caller chose.
     NgxSetCreateTuning(s, tuning);
@@ -603,6 +613,9 @@ void NgxSetResources(NgxSnippet& s, const NVSDK_NGX_Resource_VK& color,
         ParamSetUI(s.params, n[2], width, &seh);
         ParamSetUI(s.params, n[3], height, &seh);
     }
+    // The motion units come from the selected mode, not from a per-frame constant.
+    // Writing 1.0 here used to undo ApplyMotionScale on every evaluate, which made
+    // the "Motion units" control do nothing at all.
     bool ps = true;
     ps &= ParamSetF(s.params, "DLSSNR.Jitter.Offset.X", 0.0f, &seh);
     ps &= ParamSetF(s.params, "DLSSNR.Jitter.Offset.Y", 0.0f, &seh);
@@ -612,8 +625,6 @@ void NgxSetResources(NgxSnippet& s, const NVSDK_NGX_Resource_VK& color,
     ps &= ParamSetF(s.params, "Sharpness", 0.0f, &seh);
     ps &= ParamSetUI(s.params, "Width", width, &seh);
     ps &= ParamSetUI(s.params, "Height", height, &seh);
-    ps &= ParamSetF(s.params, "DLSSNR.MVecScaleX", 1.0f, &seh);
-    ps &= ParamSetF(s.params, "DLSSNR.MVecScaleY", 1.0f, &seh);
     ps &= ParamSetUI(s.params, "DLSSNR.DepthInverted", 1u, &seh);
     ps &= ParamSetUI(s.params, "DLSS.Indicator.Invert.X.Axis", 0u, &seh);
     ps &= ParamSetUI(s.params, "DLSS.Indicator.Invert.Y.Axis", 0u, &seh);
