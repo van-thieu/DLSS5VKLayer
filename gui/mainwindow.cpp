@@ -168,6 +168,7 @@ static const SettingEntry kSettingsTable[] = {
     {"set_colour_mode", &ShmHeader::colourMode, false},
     {"set_hdr_mode", &ShmHeader::hdrMode, false},
     {"set_sdr_16bit_multipass", &ShmHeader::sdr16Multipass, false},
+    {"set_pass_average", &ShmHeader::passAverage, false},
     {"set_white_point_source", &ShmHeader::whitePointSource, false},
     {"set_paper_white", &ShmHeader::whitePointBits, true},
     {"set_white_point_scale", &ShmHeader::whitePointScaleBits, true},

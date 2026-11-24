@@ -38,6 +38,8 @@ private:
     void buildPage(uint32_t pass, QWidget* page);
     void applyEnabled(uint32_t pass, bool on);
 
+    QCheckBox* averageToggle = nullptr;
+
     ShmHeader* hdr = nullptr;
     QTabWidget* tabs = nullptr;
     std::array<std::vector<Row>, kMaxPasses> rows;

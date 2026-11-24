@@ -1449,14 +1449,9 @@ struct BlendPush {
 
 // An alternative to the sequential chain: every pass contributes a share of its
 // edit against the running picture, so a low final pass cannot imprint its look
-// on the whole frame. Off by default; set DLSSNR_PASS_AVERAGE=1 in the helper
-// environment to try it.
-static bool PassAverageEnabled() {
-    static const bool v = [] {
-        const char* p = getenv("DLSSNR_PASS_AVERAGE");
-        return p && p[0] == '1';
-    }();
-    return v;
+// on the whole frame. Controlled by the per-pass dialog, not the environment.
+static bool PassAverageEnabled(const ShmMap& shm) {
+    return shm.hdr && shm.hdr->passAverage.load() != 0;
 }
 
 static int BlendFormatIndex(VkFormat f) {
@@ -2912,7 +2907,7 @@ static bool ProcessFrame(NeuralState& ns, ShmMap& shm) {
     // In average mode each active pass contributes intensity/N of an edit against
     // the running picture, so the total strength is the mean of the pass settings
     // rather than being set by whatever value the last pass happens to have.
-    const bool averageMode = PassAverageEnabled();
+    const bool averageMode = PassAverageEnabled(shm);
     uint32_t activePasses = 0;
     if (averageMode) {
         for (uint32_t i = 0; i < passes; ++i) {

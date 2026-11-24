@@ -37,7 +37,7 @@ static constexpr uint32_t kShmMagic = 0x32524E47;
 // 64 KiB because VK_EXT_external_memory_host demands the imported pointer meet
 // minImportedHostPointerAlignment and NVIDIA answers 64 KiB, and the dma-buf exchange and HDR
 // and round-trip attribution. A stale mapping of either lineage must be re-created, not half-read.
-static constexpr uint32_t kShmVersion = 20;
+static constexpr uint32_t kShmVersion = 21;
 
 
 static constexpr uint32_t kMaxW = 7680, kMaxH = 4320;
@@ -537,6 +537,10 @@ struct ShmHeader {
     std::atomic<uint32_t> sdr16Multipass;
     std::atomic<uint32_t> mvecPixelSize;
 
+    // Share each active pass's intensity across the chain (intensity / active
+    // passes) instead of letting the last pass set the whole picture's strength.
+    std::atomic<uint32_t> passAverage;
+
 };
 
 static_assert(sizeof(ShmHeader) <= kHeaderBytes, "ShmHeader outgrew its region");
@@ -552,7 +556,7 @@ static_assert(sizeof(ShmHeader) <= kHeaderBytes, "ShmHeader outgrew its region")
 // The version check already existed to prevent exactly that; what was missing was anything to make
 // someone remember to use it. If these fire, the layout changed: bump kShmVersion in the same commit,
 // then update these numbers.
-static_assert(sizeof(ShmHeader) == 1968, "the header layout changed -- bump kShmVersion");
+static_assert(sizeof(ShmHeader) == 1972, "the header layout changed -- bump kShmVersion");
 
 static_assert(offsetof(ShmHeader, enabled) == 44, "layout changed -- bump kShmVersion");
 static_assert(offsetof(ShmHeader, transferStrengthBits) == 88, "layout changed -- bump kShmVersion");
@@ -720,6 +724,7 @@ inline void ShmInitDefaults(ShmHeader* h) {
 
     h->ratioSmoothPercent.store(100);
     h->sdr16Multipass.store(0);
+    h->passAverage.store(0);
 
 
     for (uint32_t i = 0; i < kMaxPasses; ++i) {

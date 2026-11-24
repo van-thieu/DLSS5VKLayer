@@ -24,6 +24,19 @@ PassDialog::PassDialog(ShmHeader* header, QWidget* parent) : QDialog(parent), hd
     note->setWordWrap(true);
     root->addWidget(note);
 
+    averageToggle = new QCheckBox(
+        tr("Average pass strengths (share intensity across active passes)"), this);
+    averageToggle->setToolTip(tr("On: each active pass contributes intensity / number of active "
+                                 "passes, so the last pass cannot set the whole picture's strength. "
+                                 "Off: each pass uses its own intensity directly."));
+    if (hdr) averageToggle->setChecked(hdr->passAverage.load() != 0);
+    connect(averageToggle, &QCheckBox::toggled, this, [this](bool on) {
+        if (!hdr) return;
+        hdr->passAverage.store(on ? 1u : 0u);
+        hdr->controlSeq.fetch_add(1);
+    });
+    root->addWidget(averageToggle);
+
     tabs = new QTabWidget(this);
     // Only the passes that can actually run are offered; the ceiling is a real limit, not a hint.
     const uint32_t shown = hdr ? ShmPassCeiling(hdr) : kMaxPasses;
