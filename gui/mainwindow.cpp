@@ -1417,20 +1417,25 @@ QWidget* MainWindow::buildSettings() {
         perPassNote->setWordWrap(true);
         perPassNote->setStyleSheet("color: #fb8c00;");
         f->addRow(perPassNote);
-        modelStyle = binder->AddChoice(f, tr("Style"), &ShmHeader::style, { tr("Default"), tr("Natural"), tr("Cinematic") },
-                          tr("The model's own processing profiles."), ShmBinder::AtCreate);
+        modelStyle = binder->AddChoice(f, tr("Style"), &ShmHeader::style,
+                          { tr("Default (standard)"), tr("Natural"), tr("Cinematic") },
+                          tr("The model's own processing profiles. Default (standard) is the "
+                             "strongest and can look stylised; Natural is gentler; Cinematic tones "
+                             "down the shine. Names come from community testing — NVIDIA ships none."),
+                          ShmBinder::AtCreate);
         modelPreset = binder->AddChoice(f, tr("Preset"), &ShmHeader::preset,
                        { tr("Default"), tr("Preset 1"), tr("Preset 2"), tr("Preset 3") },
                        tr("The model's own render preset. This is a different scale from the DLSS "
                           "super-resolution presets; the same number means something else here."),
                        ShmBinder::AtCreate);
-        modelIntensity = binder->AddFloat(f, tr("Intensity"), &ShmHeader::intensityBits, 0.0, 4.0, 0.05,
-                         tr("How hard the model works."), ShmBinder::AtCreate);
-        modelStructure = binder->AddFloat(f, tr("Local structure"), &ShmHeader::localStructureBits, 0.0, 4.0, 0.05, "",
+        modelIntensity = binder->AddFloat(f, tr("Intensity"), &ShmHeader::intensityBits, 0.0, 2.0, 0.05,
+                         tr("How hard the model works. 1.0 is the default; the reference range is 0-2."),
                          ShmBinder::AtCreate);
-        modelTone = binder->AddFloat(f, tr("Local tone"), &ShmHeader::localToneBits, 0.0, 4.0, 0.05, "",
+        modelStructure = binder->AddFloat(f, tr("Local structure"), &ShmHeader::localStructureBits, 0.0, 2.0, 0.05, "",
                          ShmBinder::AtCreate);
-        modelSkin = binder->AddFloat(f, tr("Skin structure"), &ShmHeader::skinStructureBits, -1.0, 4.0, 0.05,
+        modelTone = binder->AddFloat(f, tr("Local tone"), &ShmHeader::localToneBits, 0.0, 2.0, 0.05, "",
+                         ShmBinder::AtCreate);
+        modelSkin = binder->AddFloat(f, tr("Skin structure"), &ShmHeader::skinStructureBits, -1.0, 2.0, 0.05,
                          tr("-1 follows local structure, which is the model's own default. It is not a "
                          "strength of zero."),
                          ShmBinder::AtCreate);
