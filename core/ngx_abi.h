@@ -38,6 +38,7 @@ typedef unsigned long long NVSDK_NGX_ULONGLONG;
 typedef unsigned int NVSDK_NGX_Version;
 #define NVSDK_NGX_Version_API_13 0x00000013u
 #define NVSDK_NGX_Version_API_14 0x00000014u
+#define NVSDK_NGX_Version_API_15 0x00000015u
 
 struct NVSDK_NGX_Handle;
 struct NVSDK_NGX_FeatureDiscoveryInfo; // opaque; passed as nullptr
@@ -126,7 +127,7 @@ typedef NVSDK_NGX_Result (NVSDK_CONV* PFN_NVSDK_NGX_ProgressCallback)(float prog
 
 // Feature 18: DLSS Neural Rendering (DLSS 5 NR)
 #define FEATURE_DLSSNR 18
-#define DLSSNR_SIGNED_SNIPPET_APPLICATION_ID 0x0876232Cull
+#define DLSSNR_SIGNED_SNIPPET_APPLICATION_ID 0x24480451ull
 
 // NVSDK_NGX_DLSS_Feature_Flags (public SDK values; "Feature_Flags" create param).
 enum NVSDK_NGX_DLSS_Feature_Flags {

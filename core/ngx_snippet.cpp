@@ -281,7 +281,7 @@ bool NgxLoadAndInit(NgxSnippet& s, VkInstance instance, VkPhysicalDevice pd, VkD
             DWORD seh2 = 0;
             NVSDK_NGX_Result r = Guarded([&] {
                 return coreInitExt(DLSSNR_SIGNED_SNIPPET_APPLICATION_ID, s.binDir.c_str(),
-                    instance, pd, device, NVSDK_NGX_Version_API_14, nullptr);
+                    instance, pd, device, NVSDK_NGX_Version_API_15, nullptr);
             }, NVSDK_NGX_Result_FAIL_SEH, &seh2);
             Log("[core] VULKAN_Init_Ext -> %#x seh=%#x", (uint32_t)r, seh2);
             coreInited = NVSDK_NGX_SUCCEED(r);
@@ -389,7 +389,7 @@ bool NgxLoadAndInit(NgxSnippet& s, VkInstance instance, VkPhysicalDevice pd, VkD
 
     // Snippet Init_Ext: (appId, path, instance, pd, device, version, featureInfo=nullptr)
     NVSDK_NGX_Result initResult = NVSDK_NGX_Result_FAIL_NotInitialized;
-    for (NVSDK_NGX_Version ver : { NVSDK_NGX_Version_API_14, NVSDK_NGX_Version_API_13 }) {
+    for (NVSDK_NGX_Version ver : { NVSDK_NGX_Version_API_15, NVSDK_NGX_Version_API_14, NVSDK_NGX_Version_API_13 }) {
         if (s.initExt) {
             initResult = CallInitExtSafely(s.initExt, DLSSNR_SIGNED_SNIPPET_APPLICATION_ID,
                 s.binDir.c_str(), instance, pd, device, ver, &seh);
@@ -630,7 +630,7 @@ void NgxSetResources(NgxSnippet& s, const NVSDK_NGX_Resource_VK& color,
     ps &= ParamSetUI(s.params, "DLSS.Indicator.Invert.Y.Axis", 0u, &seh);
     ps &= ParamSetUI(s.params, "DLSSNR.Enabled", 1u, &seh);
     ps &= ParamSetUI(s.params, "DLSSNR.Reset", 1u, &seh);
-    ps &= ParamSetUI(s.params, "DLSSNR.UICorrection", 0u, &seh);
+    ps &= ParamSetUI(s.params, "DLSSNR.UICorrection", 1u, &seh);
 
     // Style, Intensity, LocalTone, LocalStructure, SkinStructure and UseAutoMask are deliberately
     // absent. They used to be written here, every frame, as constants -- which did two harmful
