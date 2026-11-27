@@ -1,5 +1,6 @@
 #include "sl_host.h"
 #include "logging.h"
+#include "guard.h"
 
 #include <sl.h>
 #include <sl_core_api.h>
@@ -107,6 +108,33 @@ SLHost* SLHostCreate(VkInstance instance, VkPhysicalDevice physical, VkDevice de
     r = h->getFunction(sl::kFeatureDLSS_NR, "slDLSSNRSetOptions", fn);
     h->setOptionsFn = fn;
     SLPrint("[sl] slDLSSNRSetOptions=%llu ptr=%p\n", (unsigned long long)r, fn);
+    if (fn) {
+        // Test the two v4 UUID candidates found in sl.dlss_nr.dll .rdata.
+        static const unsigned char guids[2][16] = {
+            {0xDD,0x65,0xB8,0xA8,0x3D,0x2E,0x94,0x40,0xAD,0x97,0xE5,0x93,0xA7,0x0C,0x75,0xD6},
+            {0x82,0x5D,0xAB,0x62,0xC1,0xFD,0xC3,0x4D,0xA9,0xDD,0x07,0x0D,0x1D,0x49,0x5D,0x97},
+        };
+        using ByValue = sl::Result (*)(uint32_t, const void*);
+        using ByRef = sl::Result (*)(const sl::ViewportHandle&, const void*);
+        using OneArg = sl::Result (*)(const void*);
+        auto byValue = reinterpret_cast<ByValue>(fn);
+        auto byRef = reinterpret_cast<ByRef>(fn);
+        auto oneArg = reinterpret_cast<OneArg>(fn);
+        sl::ViewportHandle vp(0);
+        for (int i = 0; i < 2; ++i) {
+            unsigned char buf[512] = {};
+            memcpy(buf, guids[i], 16);
+            buf[16] = 1;  // BaseStructure::structVersion = kStructVersion1
+            for (int sig = 0; sig < 3; ++sig) {
+                DWORD seh = 0;
+                sl::Result rr = sl::Result::eErrorIO;
+                if (sig == 0) rr = Guarded([&] { return byValue(0u, buf); }, sl::Result::eErrorIO, &seh);
+                else if (sig == 1) rr = Guarded([&] { return byRef(vp, buf); }, sl::Result::eErrorIO, &seh);
+                else rr = Guarded([&] { return oneArg(buf); }, sl::Result::eErrorIO, &seh);
+                SLPrint("[sl] GUID %d sig %d -> %llu seh=%#x\n", i, sig, (unsigned long long)rr, seh);
+            }
+        }
+    }
     return h;
 }
 
