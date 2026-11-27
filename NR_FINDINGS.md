@@ -60,6 +60,23 @@ NGX parameter names (`DLSSNR.*` strings in `nvngx_dlssnr.dll`):
 `0=eOff, 1=eMaxPerformance, 2=eBalanced, 3=eMaxQuality,
 4=eUltraPerformance, 5=eUltraQuality, 6=eDLAA`.
 
+### What the strength controls mean
+
+NVIDIA's own DLSS-NR documentation calls `localStructureStrength` the *local detail
+and structure enhancement strength*: the high-frequency material/lighting cues —
+ambient occlusion, contact shadows, reflections and subsurface scattering (skin,
+hair, leaves). `localToneStrength` is the spatial/low-frequency counterpart:
+broader lighting and colour response. `intensity` is the overall strength, and
+`globalToneStrength` (a game-side setting) is the whole-image tone adjustment.
+So "structure" is not a detail slider in the sharpening sense; it decides how
+strongly the model adds those fine lighting/material effects.
+
+WWM ships `1.0` as the default. OptiScaler exposes `0..2` with `1.0` as default,
+but community measurement of 310.9.16 shows the runtime renders values above
+`1.0` identically to `1.0` — which is why dragging past 1 looks inert. `Skin
+structure` is the skin-specific part of the same idea: `-1` means "follow local
+structure" and is only meaningful with the automatic skin mask enabled.
+
 **Important:** only `DLSSNR.MaskBlendMode` is a real NGX parameter among the four
 extra settings we added. `PerformanceMode`, `ModelMask` and `GlobalToneStrength`
 are WWM-side settings: the model's 61 `DLSSNR.*` names contain none of them, and
