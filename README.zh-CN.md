@@ -28,6 +28,8 @@ DLSS5VKLayer 是一个 Linux Vulkan 层加助手服务，它把呈现的帧转�
   某个 Pass 启用逐 Pass 模式，并在开启时把主界面的模型控件设为只读。
 - **锐度由层本身施加。** `nvngx_dlssnr.dll` 没有锐化参数，因此 GUI 滑块驱动的是合成后画面上的
   非锐化掩模，而不是写入一个无人读取的 NGX 键。
+- **模型滑块现在会作用于正在运行的特征。** 强度、色调、结构、皮肤结构、风格、预设、自动遮罩与遮罩混合模式会在创建特征时以及每次求值前写入，与参考 Vulkan forwarder 一致。只在创建时写入会让日志看起来正确，但画面不随滑块变化。
+- **全局色调是合成控件。** WWM 的 `DLSSNRGlobalToneStrength` 并不是 NGX 键；层会把它作为合成色调传递强度的乘数，`1.0` 保持原画面。性能模式与模型遮罩仅用于与 WWM 配置对齐，模型没有对应参数。
 - **运动单位现在真正生效。** 所选缩放会在特征创建与求值时传到模型，不再每帧被 `1.0` 覆盖。
 - **游戏配置档已发布**在 [`game_profiles/`](game_profiles/) 下，按其校准所用的 GPU 分组。
 - **浏览器视频支持在单独的项目中**：[van-thieu/DLSSNR-Video](https://github.com/van-thieu/DLSSNR-Video)。
@@ -38,6 +40,16 @@ DLSS5VKLayer 是一个 Linux Vulkan 层加助手服务，它把呈现的帧转�
 ```text
 DLSSNR_ALLOW_OVERLAY=1          在 Steam 的辅助进程中保持该层启用
 ```
+
+## Where Winds Meet / DLSS 5 NR
+
+详细说明、WWM 的默认参数、枚举含义、测过的模型版本与当前限制见
+[`NR_FINDINGS.md`](NR_FINDINGS.md)。
+
+简要结论：DLSS 5 NR **确实**能在 Proton 下运行（助手在 Wine 下的 Windows PE 中创建 NGX 特征 18），
+但在 Where Winds Meet 中仍未能确认合成结果清晰可见。Linux 上不会出现游戏内的 Neural Rendering 开关。
+模型滑块现在会在创建与求值时作用于运行中的特征；WWM 的全局色调由层的合成阶段施加。
+要让改动生效，请重启助手与游戏以加载重新构建的二进制文件。
 
 ## 功能特性
 
@@ -459,7 +471,9 @@ Motion units              Normalised, Pixels (default), UV 0..1
 缩放给需要这些单位的模型。
 
 **Sharpness**（Rendering → Neural rendering）是由层施加在最终合成画面上的非锐化掩模，而不是模型
-参数 —— DLSS-NR 的 DLL 没有锐化输入。
+参数 —— DLSS-NR 的 DLL 没有锐化输入。同一组里的 **Global tone** 也由层施加，作为色调传递强度的
+乘数：`1.0` 为中性，`0` 保留游戏自身的亮度，大于 `1` 会加强模型的重新布光。
+**Performance mode** 与 **Model mask** 仅用于与 WWM 配置对齐，模型没有对应的 NGX 键，因此不会改变画面。
 
 列表上方的配置档下拉框保存着已存的配置档。**Save** 会按它询问的名称写入当前设置，
 该名称已预填为所选配置档的名称；条目旁的 **✕** 用于删除。配置档是

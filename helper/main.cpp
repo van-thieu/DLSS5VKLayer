@@ -2355,8 +2355,7 @@ static bool DetectSceneCut(NeuralState& ns, const uint8_t* in, uint32_t w, uint3
     return cut;
 }
 
-static NgxTuning TuningFor(const ShmHeader* h, uint32_t pass) {
-    const PassTuning p = ShmResolvePass(h, pass);
+static NgxTuning TuningForPass(const PassTuning& p, const ShmHeader* h) {
     NgxTuning t;
     t.intensity = ClampF(p.intensity, 0.0f, 4.0f);
     t.localTone = ClampF(p.localTone, 0.0f, 4.0f);
@@ -2365,7 +2364,14 @@ static NgxTuning TuningFor(const ShmHeader* h, uint32_t pass) {
     t.style = p.style;
     t.preset = p.preset;
     t.autoMask = p.autoMask ? 1u : 0u;
+    // MaskBlendMode is a real NGX key in 310.9; the other three WWM-side fields have no model
+    // counterpart and are applied, where meaningful, by the layer's composition instead.
+    if (h) t.maskBlend = h->maskBlendBits.load();
     return t;
+}
+
+static NgxTuning TuningFor(const ShmHeader* h, uint32_t pass) {
+    return TuningForPass(ShmResolvePass(h, pass), h);
 }
 
 static void PublishStatus(ShmMap& shm, NeuralState& ns, uint32_t state) {
@@ -2948,6 +2954,12 @@ static bool ProcessFrame(NeuralState& ns, ShmMap& shm) {
         FillResource(rm, ns.mv, false);
         FillResource(rd, ns.depth, false);
         NgxSetResources(ns.ngx, rc, ro, rm, rd, w, h);
+
+        // The model reads these from the parameter block on every dispatch as well as at create.
+        // Without this, a live slider change was logged as a successful feature rebuild while the
+        // running feature kept answering with whatever was last written into the block -- which is
+        // why structure, tone and skin structure looked inert even though their values arrived.
+        NgxSetEvaluateTuning(ns.ngx, TuningForPass(ps, shm.hdr));
 
         // Sharpness is written to the NGX block for completeness, but DLSS-NR has no
         // sharpening parameter, so it has no effect on the model. The layer reads the

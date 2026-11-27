@@ -12,12 +12,13 @@ what does not, and which numbers mean what.
 | Helper loads `nvngx_dlssnr.dll` | Yes |
 | Vulkan layer attaches to WWM | Yes (`layer_pid` non-zero after the v22 fix) |
 | Frames cross the layer/helper boundary | Yes |
+| Model sliders reach the running feature | Yes — tuning is written at create **and** every evaluate |
 | Composed image visible in-game | **Unsolved** — see "Open problems" below |
 | Native in-game NR toggle | Does not appear on Linux/Proton |
 
 NR is **not** Windows-only. The helper is a Windows PE running under Proton/Wine and
-creates NGX features successfully; the layer is a native Linux `.so`. The unsolved
-part is presentation, not execution.
+creates NGX features successfully; the layer is a native Linux `.so`. The remaining
+uncertainty is presentation, not execution.
 
 ## Active configuration
 
@@ -61,8 +62,26 @@ NGX parameter names (`DLSSNR.*` strings in `nvngx_dlssnr.dll`):
 
 **Important:** only `DLSSNR.MaskBlendMode` is a real NGX parameter among the four
 extra settings we added. `PerformanceMode`, `ModelMask` and `GlobalToneStrength`
-are WWM-side settings and writing them to the NGX parameter block is a no-op.
-The GUI documents this.
+are WWM-side settings: the model's 61 `DLSSNR.*` names contain none of them, and
+OptiScaler deliberately leaves `GlobalToneStrength` unwritten. The helper no
+longer writes those fake keys. `MaskBlendMode` is carried through to NGX; global
+tone is applied by the layer's composition (see below); performance mode and
+model mask are exposed for parity with WWM's config and have no image effect.
+
+## How a model setting reaches the picture
+
+The reference Vulkan forwarder writes `Intensity`, `Style`, `LocalStructureStrength`,
+`LocalToneStrength`, `SkinStructureStrength`, `UseAutoMask` and `MaskBlendMode`
+twice: before `VULKAN_CreateFeature`, and again before every `VULKAN_EvaluateFeature`.
+Doing only the first of those made the helper log report the right values on every
+rebuild while the running feature kept answering with whatever was last sitting in
+the shared parameter block — which is exactly why structure, tone and skin
+structure appeared inert even though their values arrived. The helper now does both.
+
+`GlobalToneStrength` has no such key. The layer reads it into its frame settings and
+multiplies it into the composition's transfer strength: `1.0` is the old behaviour,
+`0` keeps the game's own light, values above `1` push the model's relighting
+further. It is a composition strength, not a model input.
 
 ## GUI control types
 
@@ -139,10 +158,14 @@ dump from a live game/helper session.
 
 ## Open problems
 
-1. **Composed output not visible.** With `bypass=1` the raw model answer produced
-   pixelated flashes; with `bypass=0` the composed frame showed no visible
-   change. Both model versions behave this way, so this is a
-   composition/presentation problem, not a model-version problem.
+1. **Composed output not visibly better.** With `bypass=1` the raw model answer
+   produced pixelated flashes; with `bypass=0` the composed frame showed little
+   visible change. Both model versions behaved this way, so this was treated as a
+   composition/presentation problem rather than a model-version problem. Two
+   real control-path bugs have since been fixed — evaluate-time tuning writes and
+   the layer-side global tone — but the in-game result still needs a fresh
+   session (new helper and newly loaded layer) to confirm how much of the
+   remaining flatness is presentation.
 2. **Per-pass override checkbox semantics.** The "Use per-pass settings" box only
    toggles `kPassEnabled` (bit 31); the individual field checkboxes keep bits
    0-7, so unchecking the master box does not disable per-pass values (WWM.ini
@@ -165,10 +188,10 @@ dlssnr-shmctl /tmp/dlssnr-1000/shm.bin set skinstructure 1
 dlssnr-shmctl /tmp/dlssnr-1000/shm.bin set automask 0
 dlssnr-shmctl /tmp/dlssnr-1000/shm.bin set style 0
 dlssnr-shmctl /tmp/dlssnr-1000/shm.bin set preset 0
-dlssnr-shmctl /tmp/dlssnr-1000/shm.bin set perf_mode 6
-dlssnr-shmctl /tmp/dlssnr-1000/shm.bin set mask_blend 0
-dlssnr-shmctl /tmp/dlssnr-1000/shm.bin set model_mask 4294967295
-dlssnr-shmctl /tmp/dlssnr-1000/shm.bin set global_tone 1
+dlssnr-shmctl /tmp/dlssnr-1000/shm.bin set perfmode 6
+dlssnr-shmctl /tmp/dlssnr-1000/shm.bin set maskblend 0
+dlssnr-shmctl /tmp/dlssnr-1000/shm.bin set modelmask 4294967295
+dlssnr-shmctl /tmp/dlssnr-1000/shm.bin set globaltone 1   # composition strength, visible live
 dlssnr-shmctl /tmp/dlssnr-1000/shm.bin set workingscale 1
 dlssnr-shmctl /tmp/dlssnr-1000/shm.bin set bypass 0
 ```

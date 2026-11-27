@@ -92,6 +92,11 @@ struct NgxTuning {
 
 // Writes the create-time block. Must be called before NgxCreatePass, never instead of it.
 void NgxSetCreateTuning(NgxSnippet& s, const NgxTuning& t);
+// Writes the same tuning into the block again before every evaluate. The reference Vulkan
+// forwarder does both: a feature reads the values when it is built, and the running feature reads
+// them from the parameter block on each dispatch. Doing only the first made the model sliders look
+// wired in the log while the picture never answered them.
+void NgxSetEvaluateTuning(NgxSnippet& s, const NgxTuning& t);
 void NgxSetHdr(NgxSnippet& s, bool want);
 
 // Loads the snippet, initialises it, and builds pass 0.

@@ -34,6 +34,11 @@ namespace dlssnr {
 // mid-frame cannot make the encode and the resolve disagree about what they are doing.
 struct FrameSettings {
     float transferStrength = 1.0f;
+    // WWM's DLSSNRGlobalToneStrength has no NGX key -- nvngx_dlssnr.dll has no such parameter and
+    // OptiScaler deliberately does not write it. It is a composition setting, so this layer applies
+    // it as a multiplier on the tone transfer: 1 leaves the picture unchanged, 0 keeps the game's
+    // own light, above 1 pushes the model's relighting further.
+    float globalTone = 1.0f;
     float colourStrength = 1.0f;
     float maxRatio = 2.0f;
     float debugScale = 1.0f;

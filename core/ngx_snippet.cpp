@@ -476,26 +476,40 @@ bool NgxLoadAndInit(NgxSnippet& s, VkInstance instance, VkPhysicalDevice pd, VkD
     return created;
 }
 
+// The keys the model actually has. A scan of nvngx_dlssnr.dll finds 61 DLSSNR.* names and these are
+// among them; GlobalToneStrength, PerformanceMode and ModelMask are not, so writing them here only
+// made the controls look alive in the log. Global tone is applied by the layer's composition, and
+// performance mode / model mask are WWM-side settings with no NGX counterpart.
+static bool SetModelTuning(NgxSnippet& s, const NgxTuning& t, bool includePreset, DWORD* seh) {
+    bool ok = true;
+    if (includePreset) ok &= ParamSetUI(s.params, "DLSSNR.Hint.Render.Preset", t.preset, seh);
+    ok &= ParamSetUI(s.params, "DLSSNR.Style", t.style, seh);
+    ok &= ParamSetF(s.params, "DLSSNR.Intensity", t.intensity, seh);
+    ok &= ParamSetF(s.params, "DLSSNR.LocalToneStrength", t.localTone, seh);
+    ok &= ParamSetF(s.params, "DLSSNR.LocalStructureStrength", t.localStructure, seh);
+    ok &= ParamSetF(s.params, "DLSSNR.SkinStructureStrength", t.skinStructure, seh);
+    ok &= ParamSetUI(s.params, "DLSSNR.UseAutoMask", t.autoMask, seh);
+    ok &= ParamSetUI(s.params, "DLSSNR.MaskBlendMode", t.maskBlend, seh);
+    return ok;
+}
+
 void NgxSetCreateTuning(NgxSnippet& s, const NgxTuning& t) {
     if (!s.params) return;
     DWORD seh = 0;
-    bool ok = true;
-    ok &= ParamSetUI(s.params, "DLSSNR.Hint.Render.Preset", t.preset, &seh);
-    ok &= ParamSetUI(s.params, "DLSSNR.Style", t.style, &seh);
-    ok &= ParamSetF(s.params, "DLSSNR.Intensity", t.intensity, &seh);
-    ok &= ParamSetF(s.params, "DLSSNR.LocalToneStrength", t.localTone, &seh);
-    ok &= ParamSetF(s.params, "DLSSNR.LocalStructureStrength", t.localStructure, &seh);
-    ok &= ParamSetF(s.params, "DLSSNR.SkinStructureStrength", t.skinStructure, &seh);
-    ok &= ParamSetUI(s.params, "DLSSNR.UseAutoMask", t.autoMask, &seh);
-    ok &= ParamSetF(s.params, "DLSSNR.GlobalToneStrength", t.globalTone, &seh);
-    ok &= ParamSetUI(s.params, "DLSSNR.PerformanceMode", t.perfMode, &seh);
-    ok &= ParamSetUI(s.params, "DLSSNR.MaskBlendMode", t.maskBlend, &seh);
-    ok &= ParamSetUI(s.params, "DLSSNR.ModelMask", t.modelMask, &seh);
+    const bool ok = SetModelTuning(s, t, true, &seh);
     if (!ok) Log("[params] create tuning FAILED (seh=%#x)", seh);
     else
         Log("[params] create tuning: preset=%u style=%u intensity=%.2f tone=%.2f structure=%.2f "
-            "skin=%.2f automask=%u",
-            t.preset, t.style, t.intensity, t.localTone, t.localStructure, t.skinStructure, t.autoMask);
+            "skin=%.2f automask=%u maskblend=%u",
+            t.preset, t.style, t.intensity, t.localTone, t.localStructure, t.skinStructure,
+            t.autoMask, t.maskBlend);
+}
+
+void NgxSetEvaluateTuning(NgxSnippet& s, const NgxTuning& t) {
+    if (!s.params) return;
+    DWORD seh = 0;
+    const bool ok = SetModelTuning(s, t, false, &seh);
+    if (!ok && Verbose()) Log("[params] evaluate tuning FAILED (seh=%#x)", seh);
 }
 
 void NgxReleasePass(NgxSnippet& s, uint32_t pass, VkDevice device) {
@@ -636,15 +650,13 @@ void NgxSetResources(NgxSnippet& s, const NVSDK_NGX_Resource_VK& color,
     ps &= ParamSetUI(s.params, "DLSSNR.Reset", 1u, &seh);
     ps &= ParamSetUI(s.params, "DLSSNR.UICorrection", 1u, &seh);
 
-    // Style, Intensity, LocalTone, LocalStructure, SkinStructure and UseAutoMask are deliberately
-    // absent. They used to be written here, every frame, as constants -- which did two harmful
-    // things: it had no effect on the running feature, because the model latches them at creation,
-    // and it left the parameter block holding those constants for whatever created a feature next.
-    // A feature built at any moment other than immediately after NgxSetCreateTuning therefore got
-    // defaults no matter what the user had chosen. They belong to NgxTuning and to create time.
-    //
-    // UseAutoMask was the clearest case: the constant written here was 0, so the automatic skin mask
-    // was forced off regardless of the setting, whose default is on.
+    // Style, Intensity, LocalTone, LocalStructure, SkinStructure, UseAutoMask and MaskBlendMode are
+    // written by NgxSetEvaluateTuning immediately before each dispatch, with the tuning of the pass
+    // being evaluated. They are not constants: writing a fixed set here used to make whichever pass
+    // happened to be built next inherit those values, and leaving them out altogether made the
+    // running feature ignore slider changes until it happened to be rebuilt. Both halves of the
+    // contract are needed -- create time and evaluate time -- which is what the reference Vulkan
+    // forwarder does.
     // Read back once per change rather than once per pass per frame: this runs on every evaluate in
     // a multipass chain, and the readback is a diagnostic, not a step.
     unsigned int autoMask = 0;
