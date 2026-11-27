@@ -44,6 +44,21 @@ Fork-specific environment controls:
 DLSSNR_ALLOW_OVERLAY=1          keep the layer active in Steam's auxiliary processes
 ```
 
+## Where Winds Meet / DLSS 5 NR
+
+Detailed findings, WWM's default parameters, enum meanings, the tested model
+versions and the current limitations are documented in [`NR_FINDINGS.md`](NR_FINDINGS.md).
+
+Short version: DLSS 5 NR **does** execute under Proton (the helper creates NGX
+feature 18 in a Windows PE under Wine), but getting the composed result visible
+in Where Winds Meet is still unsolved. The in-game Neural Rendering toggle never
+appears on Linux.
+
+GUI controls are typed: toggles for booleans, dropdowns for enums (Style, Preset,
+Performance mode, Mask blend mode, motion/HDR/compare modes, etc.) and sliders
+for numeric values. Shared-memory protocol is version 22; all three processes
+(layer, helper, GUI) must be rebuilt together when it changes.
+
 ## Features
 
 - Vulkan implicit layer for native Linux games and Proton games.
