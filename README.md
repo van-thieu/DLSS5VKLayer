@@ -33,8 +33,9 @@ rest of this README describes the fork rather than upstream.
   GUI slider drives an unsharp mask on the composed frame rather than an NGX key nobody reads.
 - **Model sliders reach the running feature.** Intensity, tone, structure, skin structure, style,
   preset, auto mask and mask blend mode are written at feature creation *and* before every
-  evaluate, as the reference Vulkan forwarder does. Writing them only at create made the log look
-  right while the picture never answered the sliders.
+  evaluate, as the reference Vulkan forwarder does. The helper also probes the driver parameter
+  block for the real `Set(float)` / `Get(float)` vtable slots; the header's declared slots silently
+  dropped every float write, which made all the strength controls look dead.
 - **Global tone is a composition control.** WWM's `DLSSNRGlobalToneStrength` is not an NGX key; the
   layer applies it as a multiplier on the composition's tone transfer, with `1.0` preserving the
   old picture. Performance mode and model mask are shown for WWM parity only — the model has no

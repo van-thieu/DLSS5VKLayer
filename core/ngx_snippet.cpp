@@ -7,6 +7,7 @@
 #include "logging.h"
 #include "ngx_param.h"
 #include <chrono>
+#include <cmath>
 #include <cstring>
 
 namespace dlssnr {
@@ -115,14 +116,82 @@ static bool ParamSetULL(NVSDK_NGX_Parameter* p, const char* n, unsigned long lon
     Guarded([&] { p->Set(n, v); return true; }, false, seh);
     return *seh == 0;
 }
+
+// The C++ declaration of NVSDK_NGX_Parameter says Set(float) is at slot 2 and Get(float) at slot
+// 14, but the block the driver allocates does not have to follow the header. OptiScaler probes for
+// the real slots at runtime for exactly this reason. Our old code wrote every float through the
+// declared slot, which the uint self-test never covered: the round trip silently returned 0, all
+// model strengths were written into a slot nobody reads, and only Intensity appeared to work
+// because the helper uses that value to blend/skip passes on its own.
+using SetFloatFn = void (NVSDK_CONV *)(void*, const char*, float);
+using GetFloatFn = NVSDK_NGX_Result (NVSDK_CONV *)(void*, const char*, void*);
+static int g_floatSetSlot = -1;
+static int g_floatGetSlot = -1;
+
+static void** VTable(NVSDK_NGX_Parameter* p) { return *reinterpret_cast<void***>(p); }
+
+// Try one (setter, getter) pair. The getter may belong to a different C++ overload, so give it a
+// generously sized buffer and only trust a float that reads back exactly.
+static bool ProbeFloatSlot(NVSDK_NGX_Parameter* p, int setSlot, int getSlot, DWORD* seh) {
+    constexpr float kProbe = 0.123456f;
+    unsigned char raw[16] = {};
+    bool ok = false;
+    Guarded([&] {
+        void** vt = VTable(p);
+        if (!vt[setSlot] || !vt[getSlot]) return true;
+        reinterpret_cast<SetFloatFn>(vt[setSlot])(p, "__floatprobe", kProbe);
+        const NVSDK_NGX_Result r =
+            reinterpret_cast<GetFloatFn>(vt[getSlot])(p, "__floatprobe", raw);
+        if (NVSDK_NGX_SUCCEED(r)) {
+            float back = 0.0f;
+            std::memcpy(&back, raw, sizeof(back));
+            ok = std::fabs(back - kProbe) < 1e-5f;
+        }
+        return true;
+    }, false, seh);
+    return *seh == 0 && ok;
+}
+
+// Called once, after the parameter block has been allocated. Falls back to the declared C++
+// overloads only if no pair round-trips (the fallback is what OwnParam uses).
+static void DiscoverFloatSlots(NVSDK_NGX_Parameter* p) {
+    DWORD seh = 0;
+    for (int s = 0; s < 8 && g_floatSetSlot < 0; ++s) {
+        for (int g = 8; g < 16; ++g) {
+            if (ProbeFloatSlot(p, s, g, &seh)) {
+                g_floatSetSlot = s;
+                g_floatGetSlot = g;
+                break;
+            }
+        }
+    }
+    Log("[params] float vtable slots: set=%d get=%d (seh=%#x)", g_floatSetSlot, g_floatGetSlot, seh);
+}
+
 static bool ParamSetF(NVSDK_NGX_Parameter* p, const char* n, float v, DWORD* seh) {
-    Guarded([&] { p->Set(n, v); return true; }, false, seh);
+    if (g_floatSetSlot >= 0) {
+        Guarded([&] {
+            reinterpret_cast<SetFloatFn>(VTable(p)[g_floatSetSlot])(p, n, v);
+            return true;
+        }, false, seh);
+    } else {
+        Guarded([&] { p->Set(n, v); return true; }, false, seh);
+    }
     return *seh == 0;
 }
 static bool ParamGetUI(NVSDK_NGX_Parameter* p, const char* n, unsigned int* v, DWORD* seh) {
     return Guarded([&] { return NVSDK_NGX_SUCCEED(p->Get(n, v)); }, false, seh);
 }
 static bool ParamGetF(NVSDK_NGX_Parameter* p, const char* n, float* v, DWORD* seh) {
+    if (g_floatGetSlot >= 0) {
+        return Guarded([&] {
+            unsigned char raw[16] = {};
+            const NVSDK_NGX_Result r =
+                reinterpret_cast<GetFloatFn>(VTable(p)[g_floatGetSlot])(p, n, raw);
+            if (NVSDK_NGX_SUCCEED(r)) std::memcpy(v, raw, sizeof(*v));
+            return NVSDK_NGX_SUCCEED(r);
+        }, false, seh);
+    }
     return Guarded([&] { return NVSDK_NGX_SUCCEED(p->Get(n, v)); }, false, seh);
 }
 
@@ -329,13 +398,25 @@ bool NgxLoadAndInit(NgxSnippet& s, VkInstance instance, VkPhysicalDevice pd, VkD
             Log("[params] using own NVSDK_NGX_Parameter implementation");
         }
     }
+    DiscoverFloatSlots(s.params);
     {
         DWORD seh2 = 0;
         bool ok = ParamSetUI(s.params, "__selftest", 0xC0FFEE, &seh2);
         unsigned int back = 0;
         ok = ok && ParamGetUI(s.params, "__selftest", &back, &seh2) && back == 0xC0FFEE;
-        Log("[params] round-trip self-test: %s (seh=%#x)", ok ? "PASS" : "FAIL", seh2);
+        Log("[params] round-trip self-test (uint): %s back=%#x (seh=%#x)", ok ? "PASS" : "FAIL",
+            back, seh2);
         if (!ok) { s.disabled = true; return false; }
+
+        // OptiScaler found that the driver's parameter block does not keep a float at the slot the
+        // public header declares, and probes for the real one. Our uint round trip above proves only
+        // that slot; check the float path too, because every model strength is written through it.
+        const float probe = 0.123456f;
+        float fback = 0.0f;
+        bool fok = ParamSetF(s.params, "__floattest", probe, &seh2);
+        fok = fok && ParamGetF(s.params, "__floattest", &fback, &seh2);
+        Log("[params] round-trip self-test (float): %s sent=%.6f back=%.6f (seh=%#x)",
+            fok && std::fabs(fback - probe) < 1e-5f ? "PASS" : "FAIL", probe, fback, seh2);
     }
 
     // Create parameters (extracted_pipeline_notes.md section 4).

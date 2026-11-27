@@ -98,12 +98,27 @@ rebuild while the running feature kept answering with whatever was last sitting 
 the shared parameter block — which is exactly why structure, tone and skin
 structure appeared inert even though their values arrived. The helper now does both.
 
+There was a third bug underneath those two. The helper's `NVSDK_NGX_Parameter`
+vtable declaration puts `Set(float)` at slot 2 and `Get(float)` at slot 14. The
+block the driver allocates uses different slots; a uint round-trip passed, but a
+float round-trip returned `0.0` for a written `0.123456`, so **every float write**
+— Intensity, LocalTone, LocalStructure, SkinStructure, MVecScale, everything —
+went into a slot nothing reads. Only Intensity appeared to work because the
+helper also uses that value on its own side to blend or skip passes. The helper
+now probes the real float slots at startup (currently set=5, get=13 on this
+driver) and the round-trip self-test passes before any feature is built, exactly
+as OptiScaler probes them.
+
 `GlobalToneStrength` has no such key. The layer reads it into its frame settings and
 multiplies it into the composition's transfer strength: `1.0` is the old behaviour,
 `0` keeps the game's own light, values above `1` push the model's relighting
 further. It is a composition strength, not a model input.
 
-### Measured visibility (frozen-frame A/B)
+### Measured visibility (frozen-frame A/B, before the float-slot fix)
+
+These numbers were taken **before** the float vtable-slot bug below was found,
+so they describe a build in which no float model parameter reached the DLL at
+all. They must be repeated with the fixed helper.
 
 With the frame held, two captures per setting, the untouched `before` frames
 byte-identical between the pair, and the no-change control differing by ~0.35
@@ -121,10 +136,10 @@ mean levels from the model's normal frame-to-frame churn:
 | Smoothing `100 → 0` | ~0 levels, max ~16 | No |
 | Guard `2 → 8` | 0 | No |
 
-So on this 310.9 DLL the three "structure/tone" strengths are read and rebuilt
-but produce no meaningful change in the answer. That is a model property, not a
-wiring fault; the controls are kept because they are real WWM parameters and
-other model builds may use them.
+At the time this was blamed on the model. It was in fact the float vtable-slot
+bug: those three keys were never written into the block the DLL reads. The
+controls are kept because they are real WWM parameters; repeat the A/B with the
+fixed helper before drawing conclusions about the model.
 
 ## GUI control types
 
