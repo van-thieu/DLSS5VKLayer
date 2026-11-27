@@ -73,9 +73,12 @@ strongly the model adds those fine lighting/material effects.
 
 WWM ships `1.0` as the default. OptiScaler exposes `0..2` with `1.0` as default,
 but community measurement of 310.9.16 shows the runtime renders values above
-`1.0` identically to `1.0` — which is why dragging past 1 looks inert. `Skin
-structure` is the skin-specific part of the same idea: `-1` means "follow local
-structure" and is only meaningful with the automatic skin mask enabled.
+`1.0` identically to `1.0` — which is why dragging past 1 looks inert. Our GUI
+therefore caps intensity, local structure and local tone at `1.0` (skin
+structure at `-1..1`), with a tooltip saying so; the shared-memory values are
+not clamped so profiles copied from OptiScaler still load. `Skin structure` is
+the skin-specific part of the same idea: `-1` means "follow local structure"
+and is only meaningful with the automatic skin mask enabled.
 
 **Important:** only `DLSSNR.MaskBlendMode` is a real NGX parameter among the four
 extra settings we added. `PerformanceMode`, `ModelMask` and `GlobalToneStrength`

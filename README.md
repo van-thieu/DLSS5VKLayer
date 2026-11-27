@@ -500,7 +500,9 @@ composed frame, not a model parameter — the DLSS-NR DLL has no sharpening inpu
 the same group is likewise applied by the layer, as a multiplier on the tone transfer: `1.0` is
 neutral, `0` keeps the game's own light, and values above `1` push the model's relighting further.
 **Performance mode** and **Model mask** are WWM-config parity controls with no matching NGX key, so
-they do not change the image.
+they do not change the image. Intensity, local structure, local tone and skin structure are capped at
+`1.0` (skin `-1..1`) because 310.9 renders larger values identically to `1.0`; drag **down** from the
+default to see their effect.
 
 The profile dropdown above the list holds saved profiles. **Save** writes the current settings under
 the name it asks for, pre-filled with the selected profile's name; the **✕** beside an entry

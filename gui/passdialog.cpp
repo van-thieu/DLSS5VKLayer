@@ -102,19 +102,19 @@ void PassDialog::buildPage(uint32_t pass, QWidget* page) {
         return w;
     };
 
-    auto* intensity = makeFloat(0.0, 2.0, 0.05, pc.intensityBits.load());
+    auto* intensity = makeFloat(0.0, 1.0, 0.05, pc.intensityBits.load());
     addRow(tr("Intensity"), kOverrideIntensity, intensity,
            [intensity] { return FloatToBits(float(intensity->doubleValue())); }, {});
 
-    auto* structure = makeFloat(0.0, 2.0, 0.05, pc.localStructureBits.load());
+    auto* structure = makeFloat(0.0, 1.0, 0.05, pc.localStructureBits.load());
     addRow(tr("Local structure"), kOverrideLocalStructure, structure,
            [structure] { return FloatToBits(float(structure->doubleValue())); }, {});
 
-    auto* tone = makeFloat(0.0, 2.0, 0.05, pc.localToneBits.load());
+    auto* tone = makeFloat(0.0, 1.0, 0.05, pc.localToneBits.load());
     addRow(tr("Local tone"), kOverrideLocalTone, tone,
            [tone] { return FloatToBits(float(tone->doubleValue())); }, {});
 
-    auto* skin = makeFloat(-1.0, 2.0, 0.05, pc.skinStructureBits.load());
+    auto* skin = makeFloat(-1.0, 1.0, 0.05, pc.skinStructureBits.load());
     addRow(tr("Skin structure"), kOverrideSkinStructure, skin,
            [skin] { return FloatToBits(float(skin->doubleValue())); }, {});
 

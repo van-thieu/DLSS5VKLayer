@@ -1428,16 +1428,22 @@ QWidget* MainWindow::buildSettings() {
                        tr("The model's own render preset. This is a different scale from the DLSS "
                           "super-resolution presets; the same number means something else here."),
                        ShmBinder::AtCreate);
-        modelIntensity = binder->AddFloat(f, tr("Intensity"), &ShmHeader::intensityBits, 0.0, 2.0, 0.05,
-                         tr("How hard the model works. 1.0 is the default; the reference range is 0-2."),
+        modelIntensity = binder->AddFloat(f, tr("Intensity"), &ShmHeader::intensityBits, 0.0, 1.0, 0.05,
+                         tr("Overall model strength. 1.0 is the full effect; 0 keeps the game's frame. "
+                            "310.9 renders values above 1.0 identically to 1.0."),
                          ShmBinder::AtCreate);
-        modelStructure = binder->AddFloat(f, tr("Local structure"), &ShmHeader::localStructureBits, 0.0, 2.0, 0.05, "",
+        modelStructure = binder->AddFloat(f, tr("Local structure"), &ShmHeader::localStructureBits, 0.0, 1.0, 0.05,
+                         tr("Fine local lighting/material detail: ambient occlusion, contact shadows, "
+                            "reflections and subsurface scattering. 1.0 is the full effect; above 1.0 "
+                            "the runtime applies no more."),
                          ShmBinder::AtCreate);
-        modelTone = binder->AddFloat(f, tr("Local tone"), &ShmHeader::localToneBits, 0.0, 2.0, 0.05, "",
+        modelTone = binder->AddFloat(f, tr("Local tone"), &ShmHeader::localToneBits, 0.0, 1.0, 0.05,
+                         tr("Broader spatial lighting and colour response. 1.0 is the full effect; "
+                            "values above 1.0 are ignored by 310.9."),
                          ShmBinder::AtCreate);
-        modelSkin = binder->AddFloat(f, tr("Skin structure"), &ShmHeader::skinStructureBits, -1.0, 2.0, 0.05,
+        modelSkin = binder->AddFloat(f, tr("Skin structure"), &ShmHeader::skinStructureBits, -1.0, 1.0, 0.05,
                          tr("-1 follows local structure, which is the model's own default. It is not a "
-                         "strength of zero."),
+                            "strength of zero. 310.9 ignores values above 1.0."),
                          ShmBinder::AtCreate);
         modelGlobalTone = binder->AddFloat(f, tr("Global tone"), &ShmHeader::globalToneBits, 0.0, 4.0, 0.05, "",
                          ShmBinder::AtCreate);
