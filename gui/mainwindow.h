@@ -133,6 +133,10 @@ private:
     QWidget* modelStructure = nullptr;
     QWidget* modelTone = nullptr;
     QWidget* modelSkin = nullptr;
+    QWidget* modelGlobalTone = nullptr;
+    QWidget* modelPerfMode = nullptr;
+    QWidget* modelMaskBlend = nullptr;
+    QWidget* modelModelMask = nullptr;
     QCheckBox* modelAutoMask = nullptr;
     QLabel* perPassNote = nullptr;
 

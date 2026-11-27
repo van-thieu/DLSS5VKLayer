@@ -37,7 +37,7 @@ static constexpr uint32_t kShmMagic = 0x32524E47;
 // 64 KiB because VK_EXT_external_memory_host demands the imported pointer meet
 // minImportedHostPointerAlignment and NVIDIA answers 64 KiB, and the dma-buf exchange and HDR
 // and round-trip attribution. A stale mapping of either lineage must be re-created, not half-read.
-static constexpr uint32_t kShmVersion = 21;
+static constexpr uint32_t kShmVersion = 22;
 
 
 static constexpr uint32_t kMaxW = 7680, kMaxH = 4320;
@@ -277,6 +277,10 @@ struct ShmHeader {
     std::atomic<uint32_t> localStructureBits;
     std::atomic<uint32_t> skinStructureBits;
     std::atomic<uint32_t> sharpnessBits;
+    std::atomic<uint32_t> globalToneBits;
+    std::atomic<uint32_t> perfModeBits;
+    std::atomic<uint32_t> maskBlendBits;
+    std::atomic<uint32_t> modelMaskBits;
 
     // --- the composition ---------------------------------------------------------------------
     // How much of the model's edit reaches the frame, and how much of it is allowed to be colour
@@ -556,13 +560,13 @@ static_assert(sizeof(ShmHeader) <= kHeaderBytes, "ShmHeader outgrew its region")
 // The version check already existed to prevent exactly that; what was missing was anything to make
 // someone remember to use it. If these fire, the layout changed: bump kShmVersion in the same commit,
 // then update these numbers.
-static_assert(sizeof(ShmHeader) == 1972, "the header layout changed -- bump kShmVersion");
+static_assert(sizeof(ShmHeader) == 1988, "the header layout changed -- bump kShmVersion");
 
 static_assert(offsetof(ShmHeader, enabled) == 44, "layout changed -- bump kShmVersion");
-static_assert(offsetof(ShmHeader, transferStrengthBits) == 88, "layout changed -- bump kShmVersion");
-static_assert(offsetof(ShmHeader, helperState) == 176, "layout changed -- bump kShmVersion");
-static_assert(offsetof(ShmHeader, pass) == 780, "layout changed -- bump kShmVersion");
-static_assert(offsetof(ShmHeader, mvecEnabled) == 1860, "layout changed -- bump kShmVersion");
+static_assert(offsetof(ShmHeader, transferStrengthBits) == 104, "layout changed -- bump kShmVersion");
+static_assert(offsetof(ShmHeader, helperState) == 192, "layout changed -- bump kShmVersion");
+static_assert(offsetof(ShmHeader, pass) == 796, "layout changed -- bump kShmVersion");
+static_assert(offsetof(ShmHeader, mvecEnabled) == 1876, "layout changed -- bump kShmVersion");
 
 inline uint32_t FloatToBits(float f) {
     uint32_t u = 0;
@@ -689,6 +693,10 @@ inline void ShmInitDefaults(ShmHeader* h) {
     h->localStructureBits.store(FloatToBits(1.0f));
     h->skinStructureBits.store(FloatToBits(-1.0f));
     h->sharpnessBits.store(FloatToBits(0.0f));
+    h->globalToneBits.store(FloatToBits(1.0f));
+    h->perfModeBits.store(0u);
+    h->maskBlendBits.store(0u);
+    h->modelMaskBits.store(0xFFFFFFFFu);
 
     h->transferStrengthBits.store(FloatToBits(1.0f));
     h->colourStrengthBits.store(FloatToBits(1.0f));

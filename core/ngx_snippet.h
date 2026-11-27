@@ -72,14 +72,20 @@ struct NgxTuning {
     float localTone = 1.0f;
     float localStructure = 1.0f;
     float skinStructure = -1.0f;
+    float globalTone = 1.0f;
     uint32_t style = 0;
     uint32_t preset = 0;
     uint32_t autoMask = 1;
+    uint32_t perfMode = 0u;
+    uint32_t maskBlend = 0u;
+    uint32_t modelMask = 0xFFFFFFFFu;
 
     bool operator==(const NgxTuning& o) const {
         return intensity == o.intensity && localTone == o.localTone &&
                localStructure == o.localStructure && skinStructure == o.skinStructure &&
-               style == o.style && preset == o.preset && autoMask == o.autoMask;
+               globalTone == o.globalTone && style == o.style && preset == o.preset &&
+               autoMask == o.autoMask && perfMode == o.perfMode &&
+               maskBlend == o.maskBlend && modelMask == o.modelMask;
     }
     bool operator!=(const NgxTuning& o) const { return !(*this == o); }
 };

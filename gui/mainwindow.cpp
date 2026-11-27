@@ -160,6 +160,10 @@ static const SettingEntry kSettingsTable[] = {
     {"set_local_structure", &ShmHeader::localStructureBits, true},
     {"set_local_tone", &ShmHeader::localToneBits, true},
     {"set_skin_structure", &ShmHeader::skinStructureBits, true},
+    {"set_global_tone", &ShmHeader::globalToneBits, true},
+    {"set_perf_mode", &ShmHeader::perfModeBits, false},
+    {"set_mask_blend", &ShmHeader::maskBlendBits, false},
+    {"set_model_mask", &ShmHeader::modelMaskBits, false},
     {"set_auto_mask", &ShmHeader::autoMask, false},
     {"set_sharpness", &ShmHeader::sharpnessBits, true},
     {"set_motion_enabled", &ShmHeader::mvecEnabled, false},
@@ -1415,7 +1419,10 @@ QWidget* MainWindow::buildSettings() {
         f->addRow(perPassNote);
         modelStyle = binder->AddChoice(f, tr("Style"), &ShmHeader::style, { tr("Default"), tr("Natural"), tr("Cinematic") },
                           tr("The model's own processing profiles."), ShmBinder::AtCreate);
-        modelPreset = binder->AddInt(f, tr("Preset"), &ShmHeader::preset, 0, 15, tr("The model's own render preset."),
+        modelPreset = binder->AddChoice(f, tr("Preset"), &ShmHeader::preset,
+                       { tr("Default"), tr("Preset 1"), tr("Preset 2"), tr("Preset 3") },
+                       tr("The model's own render preset. This is a different scale from the DLSS "
+                          "super-resolution presets; the same number means something else here."),
                        ShmBinder::AtCreate);
         modelIntensity = binder->AddFloat(f, tr("Intensity"), &ShmHeader::intensityBits, 0.0, 4.0, 0.05,
                          tr("How hard the model works."), ShmBinder::AtCreate);
@@ -1426,6 +1433,21 @@ QWidget* MainWindow::buildSettings() {
         modelSkin = binder->AddFloat(f, tr("Skin structure"), &ShmHeader::skinStructureBits, -1.0, 4.0, 0.05,
                          tr("-1 follows local structure, which is the model's own default. It is not a "
                          "strength of zero."),
+                         ShmBinder::AtCreate);
+        modelGlobalTone = binder->AddFloat(f, tr("Global tone"), &ShmHeader::globalToneBits, 0.0, 4.0, 0.05, "",
+                         ShmBinder::AtCreate);
+        modelPerfMode = binder->AddChoice(f, tr("Performance mode"), &ShmHeader::perfModeBits,
+                         { tr("Off"), tr("Max performance"), tr("Balanced"), tr("Max quality"),
+                           tr("Ultra performance"), tr("Ultra quality"), tr("DLAA") },
+                         tr("WWM uses DLAA for the NR pass. The plugin accepts Max quality and DLAA "
+                           "only; other modes are shown for reference."),
+                         ShmBinder::AtCreate);
+        modelMaskBlend = binder->AddChoice(f, tr("Mask blend mode"), &ShmHeader::maskBlendBits,
+                         { tr("Default (0)"), tr("Mode 1"), tr("Mode 2"), tr("Mode 3") },
+                         tr("The model's mask blending mode. NVIDIA publishes no names; 0 is WWM's default."),
+                         ShmBinder::AtCreate);
+        modelModelMask = binder->AddInt(f, tr("Model mask"), &ShmHeader::modelMaskBits, 0, 0xFFFFFFFF,
+                         tr("The model's neural rendering model mask."),
                          ShmBinder::AtCreate);
         modelAutoMask = binder->AddBool(f, tr("Auto skin mask"), &ShmHeader::autoMask,
                         tr("The model's automatic skin mask."), ShmBinder::AtCreate);

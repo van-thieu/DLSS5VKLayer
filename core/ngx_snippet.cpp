@@ -487,6 +487,10 @@ void NgxSetCreateTuning(NgxSnippet& s, const NgxTuning& t) {
     ok &= ParamSetF(s.params, "DLSSNR.LocalStructureStrength", t.localStructure, &seh);
     ok &= ParamSetF(s.params, "DLSSNR.SkinStructureStrength", t.skinStructure, &seh);
     ok &= ParamSetUI(s.params, "DLSSNR.UseAutoMask", t.autoMask, &seh);
+    ok &= ParamSetF(s.params, "DLSSNR.GlobalToneStrength", t.globalTone, &seh);
+    ok &= ParamSetUI(s.params, "DLSSNR.PerformanceMode", t.perfMode, &seh);
+    ok &= ParamSetUI(s.params, "DLSSNR.MaskBlendMode", t.maskBlend, &seh);
+    ok &= ParamSetUI(s.params, "DLSSNR.ModelMask", t.modelMask, &seh);
     if (!ok) Log("[params] create tuning FAILED (seh=%#x)", seh);
     else
         Log("[params] create tuning: preset=%u style=%u intensity=%.2f tone=%.2f structure=%.2f "
