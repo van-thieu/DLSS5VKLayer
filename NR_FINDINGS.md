@@ -103,6 +103,29 @@ multiplies it into the composition's transfer strength: `1.0` is the old behavio
 `0` keeps the game's own light, values above `1` push the model's relighting
 further. It is a composition strength, not a model input.
 
+### Measured visibility (frozen-frame A/B)
+
+With the frame held, two captures per setting, the untouched `before` frames
+byte-identical between the pair, and the no-change control differing by ~0.35
+mean levels from the model's normal frame-to-frame churn:
+
+| Change | Mean difference in the composed frame | Visible? |
+|---|---|---|
+| Intensity `1 → 0` | large (tens of levels) | **Yes** — the only effective model strength |
+| Global tone `1 → 0` | ~5.9 levels, max ~100 | **Yes** — layer composition |
+| Sharpness `0 → 1` | ~3–4 levels, max ~110 | **Yes** — layer unsharp mask |
+| Colour strength `1 → 2` | ~3–12 levels, max ~116 | **Yes** — layer composition |
+| Local structure `1 → 0` | ~0 levels, max ~7 | No |
+| Local tone `1 → 0` | ~0 levels, max ~10 | No |
+| Skin structure `1 → -1` | ~0 levels, max ~28 | No |
+| Smoothing `100 → 0` | ~0 levels, max ~16 | No |
+| Guard `2 → 8` | 0 | No |
+
+So on this 310.9 DLL the three "structure/tone" strengths are read and rebuilt
+but produce no meaningful change in the answer. That is a model property, not a
+wiring fault; the controls are kept because they are real WWM parameters and
+other model builds may use them.
+
 ## GUI control types
 
 Controls are typed by the data they represent:
