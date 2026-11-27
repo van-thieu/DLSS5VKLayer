@@ -106,6 +106,11 @@ class ShmBinder : public QObject {
                       double step, const QString& tip, Latch latch = Live);
     QComboBox* AddChoice(QFormLayout* form, const QString& label, Field field, const QStringList& options,
                          const QString& tip, Latch latch = Live);
+    // Dropdown whose labels map to explicit 32-bit values, for fields that are
+    // enumerations with gaps (e.g. 0xFFFFFFFF) rather than 0..N indices.
+    QComboBox* AddChoiceValues(QFormLayout* form, const QString& label, Field field,
+                               const QVector<QPair<QString, uint32_t>>& options,
+                               const QString& tip, Latch latch = Live);
 
     // A float stored as a fraction but shown as a percentage, which is how model resolution reads.
     QWidget* AddPercent(QFormLayout* form, const QString& label, Field field, int lo, int hi,

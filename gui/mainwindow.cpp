@@ -1446,8 +1446,10 @@ QWidget* MainWindow::buildSettings() {
                          { tr("Default (0)"), tr("Mode 1"), tr("Mode 2"), tr("Mode 3") },
                          tr("The model's mask blending mode. NVIDIA publishes no names; 0 is WWM's default."),
                          ShmBinder::AtCreate);
-        modelModelMask = binder->AddInt(f, tr("Model mask"), &ShmHeader::modelMaskBits, 0, 0xFFFFFFFF,
-                         tr("The model's neural rendering model mask."),
+        modelModelMask = binder->AddChoiceValues(f, tr("Model mask"), &ShmHeader::modelMaskBits,
+                         { { tr("All (0xFFFFFFFF)"), 0xFFFFFFFFu }, { tr("None (0)"), 0u } },
+                         tr("WWM-side bitmask; all bits set in its config. Not an NGX model input, "
+                            "so changing it does not affect the rendered image."),
                          ShmBinder::AtCreate);
         modelAutoMask = binder->AddBool(f, tr("Auto skin mask"), &ShmHeader::autoMask,
                         tr("The model's automatic skin mask."), ShmBinder::AtCreate);
