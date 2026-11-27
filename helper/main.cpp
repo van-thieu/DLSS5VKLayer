@@ -2922,8 +2922,8 @@ static bool ProcessFrame(NeuralState& ns, ShmMap& shm) {
 
     for (uint32_t pass = 0; pass < passes; ++pass) {
         // A failed rebuild leaves a hole; the chain runs without that pass rather than losing the
-        // frame with it.
-        if (!ns.ngx.features[pass]) continue;
+        // frame with it. The Streamline path owns its own features, so there is no NGX handle here.
+        if (!ns.ngx.useStreamline && !ns.ngx.features[pass]) continue;
 
         const PassTuning ps = ShmResolvePass(shm.hdr, pass);
         // The model's own intensity flattens the picture at low values, so a pass

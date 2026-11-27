@@ -1,4 +1,4 @@
-windows_inc = include_directories('../standalone_runner/third_party', '../core')
+windows_inc = include_directories('../standalone_runner/third_party', '../core', '../third_party/streamline/include')
 windows_cpp_link_args = [
   '-static',
   '-nostdlib++',
@@ -12,6 +12,7 @@ windows_cpp_link_args = [
 executable('dlssnr_helper',
   '../helper/main.cpp',
   '../core/ngx_snippet.cpp',
+  '../core/sl_host.cpp',
   '../core/guard.cpp',
   include_directories: windows_inc,
   link_args: windows_cpp_link_args,

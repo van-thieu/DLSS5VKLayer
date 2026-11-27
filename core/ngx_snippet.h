@@ -4,6 +4,7 @@
 #include <string>
 #include <vulkan/vulkan.h>
 #include "../common/shm_protocol.h"
+#include "sl_host.h"
 
 namespace dlssnr {
 
@@ -59,6 +60,10 @@ struct NgxSnippet {
     NVSDK_NGX_Resource_VK resColor{}, resOut{}, resMV{}, resDepth{};
 
     std::wstring binDir;
+
+    // Optional Streamline host path: drives WWM's sl.dlss_nr.dll instead of raw NGX.
+    SLHost* slHost = nullptr;
+    bool useStreamline = false;
 };
 
 // Layer module handle (set in DllMain), used as the spoofed caller identity.

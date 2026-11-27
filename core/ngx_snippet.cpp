@@ -190,6 +190,25 @@ bool NgxLoadAndInit(NgxSnippet& s, VkInstance instance, VkPhysicalDevice pd, VkD
                     uint32_t width, uint32_t height, VkCommandBuffer recordingCmd,
                     const NgxTuning& tuning, float mvecScaleX, float mvecScaleY) {
     if (s.disabled) return false;
+
+    // Path A: drive WWM's Streamline NR plugin through the official SL host API.
+    // Enabled explicitly so the proven direct-NGX path stays available as a fallback.
+    char useSl[8] = {};
+    if (GetEnvironmentVariableA("DLSSNR_USE_STREAMLINE", useSl, sizeof(useSl)) > 0 && useSl[0] == '1') {
+        static const wchar_t* kPluginDir =
+            L"Z:\\run\\media\\vthieu\\Games\\SteamLibrary\\steamapps\\common\\Where Winds Meet\\Engine\\Binaries\\Win64r\\Streamline";
+        s.slHost = SLHostCreate(instance, pd, device, kPluginDir, 0x0E658700u);
+        if (s.slHost) {
+            s.useStreamline = true;
+            s.ready = true;
+            s.featureW = width;
+            s.featureH = height;
+            Log("[sl] Streamline host active (WWM NR plugin)");
+            return true;
+        }
+        Log("[sl] Streamline host failed; falling back to direct NGX");
+    }
+
     s.binDir = ResolveBinDir();
     if (s.binDir.empty()) { Log("[ngx] nvngx_dlssnr.dll not found (set DLSSNR_BIN_DIR)"); s.disabled = true; return false; }
     Log("[ngx] bin dir: %ls", s.binDir.c_str());
@@ -281,7 +300,7 @@ bool NgxLoadAndInit(NgxSnippet& s, VkInstance instance, VkPhysicalDevice pd, VkD
             DWORD seh2 = 0;
             NVSDK_NGX_Result r = Guarded([&] {
                 return coreInitExt(DLSSNR_SIGNED_SNIPPET_APPLICATION_ID, s.binDir.c_str(),
-                    instance, pd, device, NVSDK_NGX_Version_API_14, nullptr);
+                    instance, pd, device, NVSDK_NGX_Version_API_15, nullptr);
             }, NVSDK_NGX_Result_FAIL_SEH, &seh2);
             Log("[core] VULKAN_Init_Ext -> %#x seh=%#x", (uint32_t)r, seh2);
             coreInited = NVSDK_NGX_SUCCEED(r);
@@ -389,7 +408,7 @@ bool NgxLoadAndInit(NgxSnippet& s, VkInstance instance, VkPhysicalDevice pd, VkD
 
     // Snippet Init_Ext: (appId, path, instance, pd, device, version, featureInfo=nullptr)
     NVSDK_NGX_Result initResult = NVSDK_NGX_Result_FAIL_NotInitialized;
-    for (NVSDK_NGX_Version ver : { NVSDK_NGX_Version_API_14, NVSDK_NGX_Version_API_13 }) {
+    for (NVSDK_NGX_Version ver : { NVSDK_NGX_Version_API_15, NVSDK_NGX_Version_API_14, NVSDK_NGX_Version_API_13 }) {
         if (s.initExt) {
             initResult = CallInitExtSafely(s.initExt, DLSSNR_SIGNED_SNIPPET_APPLICATION_ID,
                 s.binDir.c_str(), instance, pd, device, ver, &seh);
@@ -535,7 +554,9 @@ static void ApplyHdrContract(NgxSnippet& s) {
 
 bool NgxCreatePass(NgxSnippet& s, uint32_t pass, uint32_t width, uint32_t height,
                    VkCommandBuffer recordingCmd) {
-    if (s.disabled || !s.params || pass >= kMaxPasses) return false;
+    if (s.disabled || pass >= kMaxPasses) return false;
+    if (s.useStreamline) return true;  // SL plugin owns its own pass chain.
+    if (!s.params) return false;
     // The layer already refuses to send these, but this is the process that touches the GPU, so it
     // is the one that has to be safe against any client: at 1x1 the model builds happily and the
     // first submit hangs the channel (Xid 109), which kills the game as well as this helper.
@@ -579,8 +600,8 @@ bool NgxCreatePass(NgxSnippet& s, uint32_t pass, uint32_t width, uint32_t height
 void NgxSetResources(NgxSnippet& s, const NVSDK_NGX_Resource_VK& color,
                      const NVSDK_NGX_Resource_VK& out, const NVSDK_NGX_Resource_VK& mv,
                      const NVSDK_NGX_Resource_VK& depth, uint32_t width, uint32_t height) {
-    if (!s.params) return;
     s.resColor = color; s.resOut = out; s.resMV = mv; s.resDepth = depth;
+    if (!s.params) return;
     DWORD seh = 0;
     Guarded([&] {
         const bool hasDepth = s.resDepth.Resource.ImageViewInfo.ImageView != VK_NULL_HANDLE;
@@ -701,7 +722,21 @@ void NgxSetSharpness(NgxSnippet& s, float sharpness) {
 }
 
 bool NgxEvaluatePass(NgxSnippet& s, uint32_t pass, VkCommandBuffer recordingCmd) {
-    if (s.disabled || !s.ready || pass >= kMaxPasses || !s.features[pass]) return false;
+    if (s.disabled || !s.ready || pass >= kMaxPasses) return false;
+    if (s.useStreamline) {
+        if (pass != 0) return true;  // Streamline plugin owns its own pass chain.
+        const auto& c = s.resColor.Resource.ImageViewInfo;
+        const auto& o = s.resOut.Resource.ImageViewInfo;
+        const auto& m = s.resMV.Resource.ImageViewInfo;
+        const auto& d = s.resDepth.Resource.ImageViewInfo;
+        return SLHostEvaluate(s.slHost, recordingCmd,
+                              c.Image, c.ImageView, c.Format,
+                              o.Image, o.ImageView, o.Format,
+                              m.Image, m.ImageView, m.Format,
+                              d.Image, d.ImageView, d.Format,
+                              s.featureW, s.featureH);
+    }
+    if (!s.features[pass]) return false;
     DWORD seh = 0;
     NVSDK_NGX_Result r =
         CallEvaluateSafely(s.evaluateFeature, recordingCmd, s.features[pass], s.params, &seh);
@@ -716,6 +751,11 @@ bool NgxEvaluatePass(NgxSnippet& s, uint32_t pass, VkCommandBuffer recordingCmd)
 // Teardown order per verified runner: Release -> Shutdown1 -> DestroyParameters
 // -> restore IAT -> FreeLibrary.
 void NgxTeardown(NgxSnippet& s, VkDevice device) {
+    if (s.slHost) {
+        SLHostDestroy(s.slHost);
+        s.slHost = nullptr;
+        s.useStreamline = false;
+    }
     DWORD seh = 0;
     for (uint32_t i = 0; i < kMaxPasses; ++i) {
         if (!s.features[i] || !s.releaseFeature) continue;
