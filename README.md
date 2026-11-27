@@ -28,7 +28,9 @@ rest of this README describes the fork rather than upstream.
 - **Per-pass settings really compound.** Each pass blends its model output with its input, so a
   low intensity is a gentle refinement instead of a flattened picture. A toggle in the Passes
   dialog shares strength across active passes; another enables per-pass mode for a pass and makes
-  the main model controls read-only while it is on.
+  the main model controls read-only while it is on. Turning that toggle **off** clears all that
+  pass's override bits — leaving the field checkboxes ticked while the master was off used to pin
+  every pass to `1.0` and silently defeat the main sliders.
 - **Sharpness is applied by the layer.** `nvngx_dlssnr.dll` has no sharpening parameter, so the
   GUI slider drives an unsharp mask on the composed frame rather than an NGX key nobody reads.
 - **Model sliders reach the running feature.** Intensity, tone, structure, skin structure, style,

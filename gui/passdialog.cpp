@@ -149,7 +149,19 @@ void PassDialog::writePass(uint32_t pass) {
     if (!hdr || pass >= kMaxPasses) return;
     PassControl& pc = hdr->pass[pass];
 
-    uint32_t mask = enabled[pass] && enabled[pass]->isChecked() ? kPassEnabled : 0u;
+    // A pass that is not explicitly taking itself over must override nothing at all. The field
+    // tick boxes remember their last state while the pass is off, and writing those bits anyway
+    // pinned every pass to 1.0 and made all main-window sliders silently ineffective.
+    if (!enabled[pass] || !enabled[pass]->isChecked()) {
+        if (pc.overrideMask.load() != 0) {
+            pc.overrideMask.store(0);
+            hdr->controlSeq.fetch_add(1);
+            hdr->tuningSeq.fetch_add(1);
+        }
+        return;
+    }
+
+    uint32_t mask = kPassEnabled;
     for (const Row& r : rows[pass]) {
         if (!r.on->isChecked()) continue;
         mask |= r.bit;

@@ -224,10 +224,14 @@ dump from a live game/helper session.
    the layer-side global tone — but the in-game result still needs a fresh
    session (new helper and newly loaded layer) to confirm how much of the
    remaining flatness is presentation.
-2. **Per-pass override checkbox semantics.** The "Use per-pass settings" box only
-   toggles `kPassEnabled` (bit 31); the individual field checkboxes keep bits
-   0-7, so unchecking the master box does not disable per-pass values (WWM.ini
-   used `0xFF`). The GUI now exposes each field explicitly.
+2. **Per-pass override checkbox semantics (fixed).** The "Use per-pass settings"
+   box used to toggle only `kPassEnabled` (bit 31) while the individual field
+   checkboxes kept bits 0–7. Unchecking the master box therefore left
+   `overrideMask=0xFF` with every pass strength pinned to `1.0`, so the helper
+   rebuilt every feature with defaults and all main-window sliders were ignored.
+   `writePass()` now writes mask 0 whenever the master box is off; the field
+   checkboxes only remember their UI state. Directly clearing the live masks
+   makes the helper immediately log the current global values again.
 3. **DLSS5Video vs game layer conflict.** `VK_LAYER_NV_dlssnr_video` and
    `VK_LAYER_NV_dlssnr` are both global implicit layers with the same
    `enable_environment`. The video manifest was moved to
