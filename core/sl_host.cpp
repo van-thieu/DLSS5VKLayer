@@ -255,34 +255,25 @@ bool SLHostEvaluate(SLHost* h, VkCommandBuffer cmd,
         }
     }
 
-    // Try the plugin's private options entry point with a populated DLSSNROptions buffer.
-    // The StructType GUID is guessed from the two v4 UUIDs in the plugin's .rdata; select with
-    // SL_NR_GUID=0/1. Nothing is written unless SL_NR_OPTIONS=1.
+    // The plugin's private DLSSNROptions entry point. The StructType GUID below is the second
+    // hardcoded 16-byte constant in slSetData (the first belongs to the common constants block).
+    // This call must happen before every evaluate with the same frame token and viewport.
     if (h->setOptionsFn) {
-        {
-            char flag[8] = {};
-            if (GetEnvironmentVariableA("SL_NR_OPTIONS", flag, sizeof(flag)) > 0 && flag[0] == '1') {
-                static const unsigned char guids[3][16] = {
-                    {0xDD,0x65,0xB8,0xA8,0x3D,0x2E,0x94,0x40,0xAD,0x97,0xE5,0x93,0xA7,0x0C,0x75,0xD6},
-                    {0x82,0x5D,0xAB,0x62,0xC1,0xFD,0xC3,0x4D,0xA9,0xDD,0x07,0x0D,0x1D,0x49,0x5D,0x97},
-                    {0xE0,0xDF,0xDF,0x29,0x3A,0x27,0x72,0x4E,0xB4,0x92,0x2D,0xC8,0x23,0xD5,0xB1,0xAD},
-                };
-                char gsel[8] = {};
-                int gi = GetEnvironmentVariableA("SL_NR_GUID", gsel, sizeof(gsel)) > 0 ? atoi(gsel) : 0;
-                if (gi < 0 || gi > 2) gi = 0;
-                unsigned char options[0x28] = {};
-                *(uint64_t*)(options + 0x00) = 0;
-                memcpy(options + 0x08, guids[gi], 16);
-                *(uint64_t*)(options + 0x18) = 1;
-                *(double*)(options + 0x20) = 1.0;
-                using SetOptions = sl::Result (*)(const sl::ViewportHandle&, const void*);
-                DWORD seh = 0;
-                sl::Result rr = Guarded([&] { return ((SetOptions)h->setOptionsFn)(viewport, options); },
-                                        sl::Result::eErrorIO, &seh);
-                SLPrint("[sl] slDLSSNRSetOptions guid %d -> %llu seh=%#x\n", gi,
-                        (unsigned long long)rr, seh);
-            }
-        }
+        static const unsigned char kDlssNrOptionsGuid[16] = {
+            0xE0,0xDF,0xDF,0x29,0x3A,0x27,0x72,0x4E,0xB4,0x92,0x2D,0xC8,0x23,0xD5,0xB1,0xAD,
+        };
+        unsigned char options[0x28] = {};
+        *(uint64_t*)(options + 0x00) = 0;                       // BaseStructure::next
+        memcpy(options + 0x08, kDlssNrOptionsGuid, 16);          // StructType
+        *(uint64_t*)(options + 0x18) = 1;                        // structVersion
+        *(double*)(options + 0x20) = 1.0;                        // strength/intensity
+        using SetOptions = sl::Result (*)(const sl::ViewportHandle&, const void*);
+        DWORD seh = 0;
+        const sl::Result rr = Guarded<sl::Result>([&]() -> sl::Result {
+            return ((SetOptions)h->setOptionsFn)(viewport, options);
+        }, sl::Result::eErrorIO, &seh);
+        if (rr != sl::Result::eOk || seh) SLPrint("[sl] slDLSSNRSetOptions=%llu seh=%#x\n",
+                                                  (unsigned long long)rr, seh);
     }
 
     static bool logged = false;
