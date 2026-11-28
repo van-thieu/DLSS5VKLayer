@@ -13,9 +13,9 @@ what does not, and which numbers mean what.
 | Vulkan layer attaches to WWM | Yes (`layer_pid` non-zero after the v22 fix) |
 | Frames cross the layer/helper boundary | Yes |
 | Model sliders reach the running feature | Yes — tuning is written at create **and** every evaluate |
-| Streamline host path | Yes — default; WWM's `sl.interposer.dll` + NR plugin, with the real `DLSSNROptions` GUID |
-| Model edit reaches the layer | Yes — proxy/answer difference ~100–175 of 255 with Streamline active |
-| Composed image visible in-game | Confirmed in capture; depends on the game actually rendering a lit scene |
+| Streamline host path | Experimental / opt-in (`DLSSNR_USE_STREAMLINE=1`) — model edit works but output goes black |
+| Model edit reaches the layer | Only on the experimental Streamline path; direct NGX returns identity |
+| Composed image visible in-game | Default path is stable; Streamline path is not usable without `presentCommon()` |
 | Native in-game NR toggle | Does not appear on Linux/Proton |
 
 NR is **not** Windows-only. The helper is a Windows PE running under Proton/Wine and
@@ -111,10 +111,10 @@ now probes the real float slots at startup (currently set=5, get=13 on this
 driver) and the round-trip self-test passes before any feature is built, exactly
 as OptiScaler probes them.
 
-### Streamline host (the working path)
+### Streamline host (experimental, opt-in)
 
 Direct NGX feature 18 creates successfully and reads every parameter, but returns its
-input unchanged. The working path drives WWM's own NR plugin through Streamline:
+input unchanged. The experimental path drives WWM's own NR plugin through Streamline:
 
 - `slInit` with `kFeatureDLSS_NR`, `slSetVulkanInfo`, `slSetFeatureLoaded`.
 - `slDLSSNRSetOptions` before **every** evaluate, using the private `DLSSNROptions`
@@ -126,7 +126,9 @@ input unchanged. The working path drives WWM's own NR plugin through Streamline:
   `eErrorMissingInputParameter` (20).
 - A fresh frame token per frame, `slSetConstants`, then `slEvaluateFeature`.
 
-`DLSSNR_NO_STREAMLINE=1` still selects the direct-NGX fallback.
+`DLSSNR_USE_STREAMLINE=1` opts in. The common plugin's `presentCommon()` cannot be resolved
+from our helper, so Streamline logs that bookkeeping/GC did not run and the model output goes
+black. The default path remains direct NGX.
 
 `GlobalToneStrength` has no such key. The layer reads it into its frame settings and
 multiplies it into the composition's transfer strength: `1.0` is the old behaviour,

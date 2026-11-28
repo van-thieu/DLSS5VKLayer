@@ -33,10 +33,11 @@ rest of this README describes the fork rather than upstream.
   every pass to `1.0` and silently defeat the main sliders.
 - **Sharpness is applied by the layer.** `nvngx_dlssnr.dll` has no sharpening parameter, so the
   GUI slider drives an unsharp mask on the composed frame rather than an NGX key nobody reads.
-- **The Streamline NR host is the default path.** Direct NGX creation returns an identity answer;
-  driving WWM's `sl.interposer.dll` + `sl.dlss_nr.dll` with the real `DLSSNROptions` GUID and the
-  required Uplift resource tags produces a real model edit that reaches the layer. Set
-  `DLSSNR_NO_STREAMLINE=1` for the old direct-NGX fallback.
+- **Streamline NR host is experimental and opt-in.** Driving WWM's `sl.interposer.dll` +
+  `sl.dlss_nr.dll` with the real `DLSSNROptions` GUID and Uplift resource tags produces a real model
+  edit, but the common plugin's `presentCommon()` cannot be resolved from our helper; the model
+  output goes black. Enable with `DLSSNR_USE_STREAMLINE=1` only for debugging. The default remains
+  the direct-NGX path.
 - **Model sliders reach the running feature.** Intensity, tone, structure, skin structure, style,
   preset, auto mask and mask blend mode are written at feature creation *and* before every
   evaluate, as the reference Vulkan forwarder does. The helper also probes the driver parameter

@@ -36,6 +36,7 @@ struct SLHost {
     PFun_slSetFeatureLoaded* setFeatureLoaded = nullptr;
     sl::FrameToken* token = nullptr;
     void* setOptionsFn = nullptr;
+    void* presentCommonFn = nullptr;
     unsigned char optionsGuid[16] = {};
     bool hasOptionsGuid = false;
     bool inited = false;
@@ -47,6 +48,7 @@ SLHost* SLHostCreate(VkInstance instance, VkPhysicalDevice physical, VkDevice de
 {
     wchar_t dll[1024];
     swprintf(dll, 1024, L"%ls\\sl.interposer.dll", pluginDir);
+    DWORD gslSeh = 0;
     HMODULE mod = LoadLibraryW(dll);
     SLPrint("[sl] interposer load=%p err=%lu\n", (void*)mod, GetLastError());
     if (!mod) return nullptr;
@@ -119,11 +121,48 @@ SLHost* SLHostCreate(VkInstance instance, VkPhysicalDevice physical, VkDevice de
     r2 = h->getFunction(sl::kFeatureDLSS_NR, "slSetData", setData);
     Log("[sl] slSetData=%llu ptr=%p module=%p rva=%llx", (unsigned long long)r2, setData, (void*)mod,
         setData ? (unsigned long long)((unsigned char*)setData - (unsigned char*)mod) : 0);
+    void* commonFn = nullptr;
+    // The common plugin exposes presentCommon through its own slGetPluginFunction(name), which
+    // returns the function pointer directly in RAX. slGetFeatureFunction(kFeatureCommon, ...) is
+    // not the route for it.
+    HMODULE common = GetModuleHandleA("sl.common.dll");
+    SLPrint("[sl] common module=%p\n", (void*)common);
+    if (common) {
+        using GetPluginFn = void* (*)(const char*);
+        if (auto* getFn = reinterpret_cast<GetPluginFn>(GetProcAddress(common, "slGetPluginFunction"))) {
+            commonFn = Guarded<void*>([&] { return getFn("presentCommon"); }, nullptr, &gslSeh);
+        }
+    }
+    h->presentCommonFn = commonFn;
+    SLPrint("[sl] presentCommon ptr=%p\n", commonFn);
     r = h->getFunction(sl::kFeatureDLSS_NR, "slDLSSNRSetOptions", fn);
     h->setOptionsFn = fn;
     SLPrint("[sl] slDLSSNRSetOptions=%llu ptr=%p\n", (unsigned long long)r, fn);
 
     return h;
+}
+
+static void ResolvePresentCommon(SLHost* h)
+{
+    if (h->presentCommonFn) return;
+    using GetPluginFn = void* (*)(const char*);
+    static const char* modules[] = { "sl.common.dll", "sl.interposer.dll", "sl.dlss_nr.dll" };
+    static const char* names[] = { "presentCommon", "slPresentCommon", "presentCommon()", "slCommonPresent" };
+    DWORD seh = 0;
+    for (const char* modName : modules) {
+        HMODULE common = GetModuleHandleA(modName);
+        if (!common) continue;
+        auto* getFn = reinterpret_cast<GetPluginFn>(GetProcAddress(common, "slGetPluginFunction"));
+        if (!getFn) continue;
+        for (const char* name : names) {
+            void* fn = Guarded<void*>([&] { return getFn(name); }, nullptr, &seh);
+            if (fn && !seh) {
+                h->presentCommonFn = fn;
+                SLPrint("[sl] presentCommon resolved from %s as '%s' -> %p\n", modName, name, fn);
+                return;
+            }
+        }
+    }
 }
 
 bool SLHostEvaluate(SLHost* h, VkCommandBuffer cmd,
@@ -194,6 +233,16 @@ bool SLHostEvaluate(SLHost* h, VkCommandBuffer cmd,
     tags[1] = sl::ResourceTag(&ro, sl::kBufferTypeUpliftOutputColor, sl::ResourceLifecycle::eOnlyValidNow);
     tags[2] = sl::ResourceTag(&rm, sl::kBufferTypeMotionVectors, sl::ResourceLifecycle::eOnlyValidNow);
     tags[3] = sl::ResourceTag(&rd, sl::kBufferTypeDepth, sl::ResourceLifecycle::eOnlyValidNow);
+    ResolvePresentCommon(h);
+    if (h->presentCommonFn) {
+        DWORD seh = 0;
+        using PresentFn = void (*)();
+        Guarded([&] {
+            reinterpret_cast<PresentFn>(h->presentCommonFn)();
+            return true;
+        }, false, &seh);
+        if (seh) SLPrint("[sl] presentCommon seh=%#x\n", seh);
+    }
     sl::ViewportHandle viewport(0);
     const sl::BaseStructure* inputs[] = { &viewport, &constants, &tags[0], &tags[1], &tags[2], &tags[3] };
 
@@ -216,16 +265,11 @@ bool SLHostEvaluate(SLHost* h, VkCommandBuffer cmd,
         unsigned char options[0x48] = {};
         *(uint64_t*)(options + 0x00) = 0;                       // BaseStructure::next
         memcpy(options + 0x08, kDlssNrOptionsGuid, 16);          // StructType
-        *(uint64_t*)(options + 0x18) = 1;                        // structVersion
-        // Field offsets follow the reads in sl.dlss_nr.dll's slSetData.
-        *(float*)(options + 0x20) = nr.intensity;
-        *(float*)(options + 0x24) = nr.localTone;
-        *(float*)(options + 0x28) = nr.localStructure;
-        *(float*)(options + 0x2c) = nr.skinStructure;
-        *(float*)(options + 0x30) = nr.globalTone;
-        *(uint32_t*)(options + 0x34) = nr.style;
-        *(uint32_t*)(options + 0x38) = nr.preset;
-        options[0x3c] = nr.autoMask ? 1 : 0;
+        char verEnv[8] = {};
+        const uint64_t version = GetEnvironmentVariableA("SL_NR_VERSION", verEnv, sizeof(verEnv)) > 0
+                                     ? (uint64_t)atoi(verEnv) : 1ull;
+        *(uint64_t*)(options + 0x18) = version;                  // structVersion
+        *(double*)(options + 0x20) = nr.intensity;
         using SetOptions = sl::Result (*)(const sl::ViewportHandle&, const void*);
         DWORD seh = 0;
         const sl::Result rr = Guarded<sl::Result>([&]() -> sl::Result {

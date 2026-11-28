@@ -260,13 +260,13 @@ bool NgxLoadAndInit(NgxSnippet& s, VkInstance instance, VkPhysicalDevice pd, VkD
                     const NgxTuning& tuning, float mvecScaleX, float mvecScaleY) {
     if (s.disabled) return false;
 
-    // Path A: drive WWM's Streamline NR plugin through the official SL host API. This is now the
-    // default because it is the only path that produces a visible edit; the direct-NGX path
-    // remains as a fallback when the plugin is unavailable. Set DLSSNR_NO_STREAMLINE=1 to skip it.
-    char noSl[8] = {};
-    const bool skipSl = GetEnvironmentVariableA("DLSSNR_NO_STREAMLINE", noSl, sizeof(noSl)) > 0 &&
-                        noSl[0] != '\0' && noSl[0] != '0';
-    if (!skipSl) {
+    // Path A: experimental Streamline NR host. It produces a real model edit but WWM's common
+    // plugin requires presentCommon() every frame, which we cannot resolve from our helper; without
+    // it the model output is black. Keep it opt-in until that hook is available.
+    char useSl[8] = {};
+    const bool wantSl = GetEnvironmentVariableA("DLSSNR_USE_STREAMLINE", useSl, sizeof(useSl)) > 0 &&
+                        useSl[0] == '1';
+    if (wantSl) {
         static const wchar_t* kPluginDir =
             L"Z:\\run\\media\\vthieu\\Games\\SteamLibrary\\steamapps\\common\\Where Winds Meet\\Engine\\Binaries\\Win64r\\Streamline";
         s.slHost = SLHostCreate(instance, pd, device, kPluginDir, 0x0E658700u);
