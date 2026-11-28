@@ -13,7 +13,9 @@ what does not, and which numbers mean what.
 | Vulkan layer attaches to WWM | Yes (`layer_pid` non-zero after the v22 fix) |
 | Frames cross the layer/helper boundary | Yes |
 | Model sliders reach the running feature | Yes — tuning is written at create **and** every evaluate |
-| Composed image visible in-game | **Unsolved** — see "Open problems" below |
+| Streamline host path | Yes — default; WWM's `sl.interposer.dll` + NR plugin, with the real `DLSSNROptions` GUID |
+| Model edit reaches the layer | Yes — proxy/answer difference ~100–175 of 255 with Streamline active |
+| Composed image visible in-game | Confirmed in capture; depends on the game actually rendering a lit scene |
 | Native in-game NR toggle | Does not appear on Linux/Proton |
 
 NR is **not** Windows-only. The helper is a Windows PE running under Proton/Wine and
@@ -108,6 +110,23 @@ helper also uses that value on its own side to blend or skip passes. The helper
 now probes the real float slots at startup (currently set=5, get=13 on this
 driver) and the round-trip self-test passes before any feature is built, exactly
 as OptiScaler probes them.
+
+### Streamline host (the working path)
+
+Direct NGX feature 18 creates successfully and reads every parameter, but returns its
+input unchanged. The working path drives WWM's own NR plugin through Streamline:
+
+- `slInit` with `kFeatureDLSS_NR`, `slSetVulkanInfo`, `slSetFeatureLoaded`.
+- `slDLSSNRSetOptions` before **every** evaluate, using the private `DLSSNROptions`
+  StructType GUID found in `sl.dlss_nr.dll`'s `slSetData`:
+  `e0 df df 29 3a 27 72 4e b4 92 2d c8 23 d5 b1 ad`.
+- Resource tags must match the feature requirements: `UpliftInputColor` (70),
+  `UpliftOutputColor` (71), `MotionVectors` (1) and `Depth` (0). Using
+  `ScalingInputColor`/`ScalingOutputColor` instead gives
+  `eErrorMissingInputParameter` (20).
+- A fresh frame token per frame, `slSetConstants`, then `slEvaluateFeature`.
+
+`DLSSNR_NO_STREAMLINE=1` still selects the direct-NGX fallback.
 
 `GlobalToneStrength` has no such key. The layer reads it into its frame settings and
 multiplies it into the composition's transfer strength: `1.0` is the old behaviour,

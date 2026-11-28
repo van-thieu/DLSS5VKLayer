@@ -27,6 +27,16 @@ struct NgxSnippet {
     NVSDK_NGX_Parameter* params = nullptr;
     FnVkDestroyParameters paramsDestroy = nullptr;
     bool ownParams = false;
+    // Last tuning written before evaluate. The Streamline host needs the same values to fill
+    // DLSSNROptions before slEvaluateFeature; storing them here keeps its call site unchanged.
+    float nrIntensity = 1.0f;
+    float nrLocalTone = 1.0f;
+    float nrLocalStructure = 1.0f;
+    float nrSkinStructure = -1.0f;
+    float nrGlobalTone = 1.0f;
+    uint32_t nrStyle = 0;
+    uint32_t nrPreset = 0;
+    uint32_t nrAutoMask = 0;
     // One NGX feature per pass, not one feature evaluated repeatedly.
     //
     // A feature carries its own temporal history, and the passes are meant to be a chain of distinct

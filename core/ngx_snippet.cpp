@@ -260,12 +260,13 @@ bool NgxLoadAndInit(NgxSnippet& s, VkInstance instance, VkPhysicalDevice pd, VkD
                     const NgxTuning& tuning, float mvecScaleX, float mvecScaleY) {
     if (s.disabled) return false;
 
-    // Path A: drive WWM's Streamline NR plugin through the official SL host API.
-    // Enabled explicitly so the proven direct-NGX path stays available as a fallback.
-    char useSl[8] = {};
-    const DWORD useSlLen = GetEnvironmentVariableA("DLSSNR_USE_STREAMLINE", useSl, sizeof(useSl));
-    Log("[sl] env flag len=%lu value='%s' (NgxLoadAndInit)", (unsigned long)useSlLen, useSl);
-    if (useSlLen > 0 && useSl[0] == '1') {
+    // Path A: drive WWM's Streamline NR plugin through the official SL host API. This is now the
+    // default because it is the only path that produces a visible edit; the direct-NGX path
+    // remains as a fallback when the plugin is unavailable. Set DLSSNR_NO_STREAMLINE=1 to skip it.
+    char noSl[8] = {};
+    const bool skipSl = GetEnvironmentVariableA("DLSSNR_NO_STREAMLINE", noSl, sizeof(noSl)) > 0 &&
+                        noSl[0] != '\0' && noSl[0] != '0';
+    if (!skipSl) {
         static const wchar_t* kPluginDir =
             L"Z:\\run\\media\\vthieu\\Games\\SteamLibrary\\steamapps\\common\\Where Winds Meet\\Engine\\Binaries\\Win64r\\Streamline";
         s.slHost = SLHostCreate(instance, pd, device, kPluginDir, 0x0E658700u);
@@ -608,6 +609,14 @@ void NgxSetCreateTuning(NgxSnippet& s, const NgxTuning& t) {
 }
 
 void NgxSetEvaluateTuning(NgxSnippet& s, const NgxTuning& t) {
+    s.nrIntensity = t.intensity;
+    s.nrLocalTone = t.localTone;
+    s.nrLocalStructure = t.localStructure;
+    s.nrSkinStructure = t.skinStructure;
+    s.nrGlobalTone = t.globalTone;
+    s.nrStyle = t.style;
+    s.nrPreset = t.preset;
+    s.nrAutoMask = t.autoMask;
     if (!s.params) return;
     DWORD seh = 0;
     const bool ok = SetModelTuning(s, t, false, &seh);
@@ -833,7 +842,10 @@ bool NgxEvaluatePass(NgxSnippet& s, uint32_t pass, VkCommandBuffer recordingCmd)
                               o.Image, o.ImageView, o.Format,
                               m.Image, m.ImageView, m.Format,
                               d.Image, d.ImageView, d.Format,
-                              s.featureW, s.featureH);
+                              s.featureW, s.featureH,
+                              SLNrOptions{s.nrIntensity, s.nrLocalTone, s.nrLocalStructure,
+                                          s.nrSkinStructure, s.nrGlobalTone, s.nrStyle,
+                                          s.nrPreset, s.nrAutoMask});
     }
     if (!s.features[pass]) return false;
     DWORD seh = 0;

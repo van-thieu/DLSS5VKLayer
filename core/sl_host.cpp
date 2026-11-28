@@ -123,55 +123,6 @@ SLHost* SLHostCreate(VkInstance instance, VkPhysicalDevice physical, VkDevice de
     h->setOptionsFn = fn;
     SLPrint("[sl] slDLSSNRSetOptions=%llu ptr=%p\n", (unsigned long long)r, fn);
 
-    // Brute-force the private DLSSNROptions StructType GUID across both the interposer and the NR
-    // plugin. The registry may live in either module's .rdata.
-    if (fn) {
-        HMODULE modules[2] = { mod, GetModuleHandleW(L"sl.dlss_nr.dll") };
-        for (HMODULE m : modules) {
-            if (!m || h->hasOptionsGuid) continue;
-            auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(m);
-            if (dos->e_magic != IMAGE_DOS_SIGNATURE) continue;
-            auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>((const unsigned char*)m + dos->e_lfanew);
-            if (nt->Signature != IMAGE_NT_SIGNATURE) continue;
-            const IMAGE_SECTION_HEADER* sec = IMAGE_FIRST_SECTION(nt);
-            for (uint32_t si = 0; si < nt->FileHeader.NumberOfSections; ++si, ++sec) {
-                if (strncmp((const char*)sec->Name, ".rdata", 6) != 0) continue;
-                const unsigned char* base = (const unsigned char*)m + sec->VirtualAddress;
-                const size_t size = sec->Misc.VirtualSize;
-                using A = sl::Result (*)(uint32_t, const void*);
-                using B = sl::Result (*)(const sl::ViewportHandle&, const void*);
-                using C = sl::Result (*)(const void*);
-                int tried = 0;
-                for (size_t off = 0; off + 16 <= size && tried < 12000 && !h->hasOptionsGuid; off += 4) {
-                    const unsigned char* g = base + off;
-                    unsigned char options[0x28] = {};
-                    *(uint64_t*)(options + 0x00) = 0;
-                    memcpy(options + 0x08, g, 16);
-                    *(uint64_t*)(options + 0x18) = 1;
-                    *(double*)(options + 0x20) = 1.0;
-                    sl::ViewportHandle vp(0);
-                    for (int sig = 0; sig < 3 && !h->hasOptionsGuid; ++sig) {
-                        DWORD seh = 0;
-                        const sl::Result rr = Guarded<sl::Result>([&]() -> sl::Result {
-                            if (sig == 0) return ((A)fn)(0u, options);
-                            if (sig == 1) return ((B)fn)(vp, options);
-                            return ((C)fn)(options);
-                        }, sl::Result::eErrorIO, &seh);
-                        ++tried;
-                        if (seh == 0 && rr == sl::Result::eOk) {
-                            Log("[sl] DLSSNROptions GUID found module=%p rva=%llx sig=%d bytes=%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x",
-                                (void*)m, (unsigned long long)(sec->VirtualAddress + off), sig,
-                                g[0],g[1],g[2],g[3],g[4],g[5],g[6],g[7],g[8],g[9],g[10],g[11],g[12],g[13],g[14],g[15]);
-                            memcpy(h->optionsGuid, g, 16);
-                            h->hasOptionsGuid = true;
-                        }
-                    }
-                }
-                SLPrint("[sl] GUID probe module=%p tried=%d found=%d\n", (void*)m, tried, (int)h->hasOptionsGuid);
-            }
-        }
-    }
-
     return h;
 }
 
@@ -180,7 +131,7 @@ bool SLHostEvaluate(SLHost* h, VkCommandBuffer cmd,
                     VkImage output, VkImageView outputView, VkFormat outputFormat,
                     VkImage mvec, VkImageView mvecView, VkFormat mvecFormat,
                     VkImage depth, VkImageView depthView, VkFormat depthFormat,
-                    uint32_t width, uint32_t height)
+                    uint32_t width, uint32_t height, const SLNrOptions& nr)
 {
     if (!h || !h->deviceSet) return false;
 
@@ -262,11 +213,19 @@ bool SLHostEvaluate(SLHost* h, VkCommandBuffer cmd,
         static const unsigned char kDlssNrOptionsGuid[16] = {
             0xE0,0xDF,0xDF,0x29,0x3A,0x27,0x72,0x4E,0xB4,0x92,0x2D,0xC8,0x23,0xD5,0xB1,0xAD,
         };
-        unsigned char options[0x28] = {};
+        unsigned char options[0x48] = {};
         *(uint64_t*)(options + 0x00) = 0;                       // BaseStructure::next
         memcpy(options + 0x08, kDlssNrOptionsGuid, 16);          // StructType
         *(uint64_t*)(options + 0x18) = 1;                        // structVersion
-        *(double*)(options + 0x20) = 1.0;                        // strength/intensity
+        // Field offsets follow the reads in sl.dlss_nr.dll's slSetData.
+        *(float*)(options + 0x20) = nr.intensity;
+        *(float*)(options + 0x24) = nr.localTone;
+        *(float*)(options + 0x28) = nr.localStructure;
+        *(float*)(options + 0x2c) = nr.skinStructure;
+        *(float*)(options + 0x30) = nr.globalTone;
+        *(uint32_t*)(options + 0x34) = nr.style;
+        *(uint32_t*)(options + 0x38) = nr.preset;
+        options[0x3c] = nr.autoMask ? 1 : 0;
         using SetOptions = sl::Result (*)(const sl::ViewportHandle&, const void*);
         DWORD seh = 0;
         const sl::Result rr = Guarded<sl::Result>([&]() -> sl::Result {
