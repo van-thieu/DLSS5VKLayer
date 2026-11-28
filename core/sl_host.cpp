@@ -78,8 +78,9 @@ SLHost* SLHostCreate(VkInstance instance, VkPhysicalDevice physical, VkDevice de
     pref.numPathsToPlugins = 1;
     pref.applicationId = applicationId;
     pref.renderAPI = sl::RenderAPI::eVulkan;
-    pref.flags = sl::PreferenceFlags::eDisableCLStateTracking |
-                   sl::PreferenceFlags::eUseFrameBasedResourceTagging;
+    pref.showConsole = true;
+    pref.logLevel = sl::LogLevel::eVerbose;
+    pref.flags = sl::PreferenceFlags::eDisableCLStateTracking;
 
     sl::Result r = h->init(pref, sl::kSDKVersion);
     sl::Result r2 = sl::Result::eErrorIO;
@@ -95,8 +96,10 @@ SLHost* SLHostCreate(VkInstance instance, VkPhysicalDevice physical, VkDevice de
     r = h->getRequirements(sl::kFeatureDLSS_NR, req);
     SLPrint("[sl] requirements=%llu flags=%llu maxViewports=%u requiredTags=%u\n",
             (unsigned long long)r, (unsigned long long)req.flags, req.maxNumViewports, req.numRequiredTags);
-    for (uint32_t ti = 0; ti < req.numRequiredTags && req.requiredTags; ++ti)
-        SLPrint("[sl] requiredTag[%u]=%d\n", ti, (int)req.requiredTags[ti]);
+    SLPrint("[sl] requiredTags ptr=%p\n", (void*)req.requiredTags);
+    if (req.requiredTags)
+        for (uint32_t ti = 0; ti < req.numRequiredTags; ++ti)
+            SLPrint("[sl] requiredTag[%u]=%d\n", ti, (int)req.requiredTags[ti]);
 
     sl::VulkanInfo vi{};
     vi.instance = instance;
@@ -235,14 +238,13 @@ bool SLHostEvaluate(SLHost* h, VkCommandBuffer cmd,
     constants.motionVectorsDilated = sl::Boolean::eFalse;
     constants.motionVectorsJittered = sl::Boolean::eFalse;
 
-    sl::ResourceTag tags[5];
-    tags[0] = sl::ResourceTag(&rc, sl::kBufferTypeScalingInputColor, sl::ResourceLifecycle::eOnlyValidNow);
-    tags[1] = sl::ResourceTag(&ro, sl::kBufferTypeScalingOutputColor, sl::ResourceLifecycle::eOnlyValidNow);
-    tags[2] = sl::ResourceTag(&ro, sl::kBufferTypeBackbuffer, sl::ResourceLifecycle::eOnlyValidNow);
-    tags[3] = sl::ResourceTag(&rm, sl::kBufferTypeMotionVectors, sl::ResourceLifecycle::eOnlyValidNow);
-    tags[4] = sl::ResourceTag(&rd, sl::kBufferTypeDepth, sl::ResourceLifecycle::eOnlyValidNow);
+    sl::ResourceTag tags[4];
+    tags[0] = sl::ResourceTag(&rc, sl::kBufferTypeUpliftInputColor, sl::ResourceLifecycle::eOnlyValidNow);
+    tags[1] = sl::ResourceTag(&ro, sl::kBufferTypeUpliftOutputColor, sl::ResourceLifecycle::eOnlyValidNow);
+    tags[2] = sl::ResourceTag(&rm, sl::kBufferTypeMotionVectors, sl::ResourceLifecycle::eOnlyValidNow);
+    tags[3] = sl::ResourceTag(&rd, sl::kBufferTypeDepth, sl::ResourceLifecycle::eOnlyValidNow);
     sl::ViewportHandle viewport(0);
-    const sl::BaseStructure* inputs[] = { &constants, &tags[0], &tags[1], &tags[2], &tags[3], &tags[4] };
+    const sl::BaseStructure* inputs[] = { &viewport, &constants, &tags[0], &tags[1], &tags[2], &tags[3] };
 
     h->token = nullptr;
     {
