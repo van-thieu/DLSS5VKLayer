@@ -112,50 +112,51 @@ SLHost* SLHostCreate(VkInstance instance, VkPhysicalDevice physical, VkDevice de
     h->setOptionsFn = fn;
     SLPrint("[sl] slDLSSNRSetOptions=%llu ptr=%p\n", (unsigned long long)r, fn);
 
-    // Brute-force the private DLSSNROptions StructType GUID from the plugin's .rdata.
-    // No v4 filter: the constant may not follow the UUID version convention. Try every 16-byte
-    // window and every plausible signature, guarded, and keep only a clean eOk result.
+    // Brute-force the private DLSSNROptions StructType GUID across both the interposer and the NR
+    // plugin. The registry may live in either module's .rdata.
     if (fn) {
-        auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(mod);
-        if (dos && dos->e_magic == IMAGE_DOS_SIGNATURE) {
-            auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>((const unsigned char*)mod + dos->e_lfanew);
-            if (nt && nt->Signature == IMAGE_NT_SIGNATURE) {
-                const IMAGE_SECTION_HEADER* sec = IMAGE_FIRST_SECTION(nt);
-                for (uint32_t si = 0; si < nt->FileHeader.NumberOfSections; ++si, ++sec) {
-                    if (strncmp((const char*)sec->Name, ".rdata", 6) != 0) continue;
-                    const unsigned char* base = (const unsigned char*)mod + sec->VirtualAddress;
-                    const size_t size = sec->Misc.VirtualSize;
-                    using A = sl::Result (*)(uint32_t, const void*);
-                    using B = sl::Result (*)(const sl::ViewportHandle&, const void*);
-                    using C = sl::Result (*)(const void*);
-                    int tried = 0;
-                    for (size_t off = 0; off + 16 <= size && tried < 6000; off += 4) {
-                        const unsigned char* g = base + off;
-                        unsigned char options[0x28] = {};
-                        *(uint64_t*)(options + 0x00) = 0;            // BaseStructure::next
-                        memcpy(options + 0x08, g, 16);                // StructType GUID
-                        *(uint64_t*)(options + 0x18) = 1;             // structVersion
-                        *(double*)(options + 0x20) = 1.0;             // only payload field
-                        sl::ViewportHandle vp(0);
-                        for (int sig = 0; sig < 3 && !h->hasOptionsGuid; ++sig) {
-                            DWORD seh = 0;
-                            const sl::Result rr = Guarded<sl::Result>([&]() -> sl::Result {
-                                if (sig == 0) return ((A)fn)(0u, options);
-                                if (sig == 1) return ((B)fn)(vp, options);
-                                return ((C)fn)(options);
-                            }, sl::Result::eErrorIO, &seh);
-                            ++tried;
-                            if (seh == 0 && rr == sl::Result::eOk) {
-                                Log("[sl] DLSSNROptions GUID found at rva=%llx sig=%d result=%llu bytes=%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x",
-                                    (unsigned long long)(sec->VirtualAddress + off), sig, (unsigned long long)rr,
-                                    g[0],g[1],g[2],g[3],g[4],g[5],g[6],g[7],g[8],g[9],g[10],g[11],g[12],g[13],g[14],g[15]);
-                                memcpy(h->optionsGuid, g, 16);
-                                h->hasOptionsGuid = true;
-                            }
+        HMODULE modules[2] = { mod, GetModuleHandleW(L"sl.dlss_nr.dll") };
+        for (HMODULE m : modules) {
+            if (!m || h->hasOptionsGuid) continue;
+            auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(m);
+            if (dos->e_magic != IMAGE_DOS_SIGNATURE) continue;
+            auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>((const unsigned char*)m + dos->e_lfanew);
+            if (nt->Signature != IMAGE_NT_SIGNATURE) continue;
+            const IMAGE_SECTION_HEADER* sec = IMAGE_FIRST_SECTION(nt);
+            for (uint32_t si = 0; si < nt->FileHeader.NumberOfSections; ++si, ++sec) {
+                if (strncmp((const char*)sec->Name, ".rdata", 6) != 0) continue;
+                const unsigned char* base = (const unsigned char*)m + sec->VirtualAddress;
+                const size_t size = sec->Misc.VirtualSize;
+                using A = sl::Result (*)(uint32_t, const void*);
+                using B = sl::Result (*)(const sl::ViewportHandle&, const void*);
+                using C = sl::Result (*)(const void*);
+                int tried = 0;
+                for (size_t off = 0; off + 16 <= size && tried < 12000 && !h->hasOptionsGuid; off += 4) {
+                    const unsigned char* g = base + off;
+                    unsigned char options[0x28] = {};
+                    *(uint64_t*)(options + 0x00) = 0;
+                    memcpy(options + 0x08, g, 16);
+                    *(uint64_t*)(options + 0x18) = 1;
+                    *(double*)(options + 0x20) = 1.0;
+                    sl::ViewportHandle vp(0);
+                    for (int sig = 0; sig < 3 && !h->hasOptionsGuid; ++sig) {
+                        DWORD seh = 0;
+                        const sl::Result rr = Guarded<sl::Result>([&]() -> sl::Result {
+                            if (sig == 0) return ((A)fn)(0u, options);
+                            if (sig == 1) return ((B)fn)(vp, options);
+                            return ((C)fn)(options);
+                        }, sl::Result::eErrorIO, &seh);
+                        ++tried;
+                        if (seh == 0 && rr == sl::Result::eOk) {
+                            Log("[sl] DLSSNROptions GUID found module=%p rva=%llx sig=%d bytes=%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x",
+                                (void*)m, (unsigned long long)(sec->VirtualAddress + off), sig,
+                                g[0],g[1],g[2],g[3],g[4],g[5],g[6],g[7],g[8],g[9],g[10],g[11],g[12],g[13],g[14],g[15]);
+                            memcpy(h->optionsGuid, g, 16);
+                            h->hasOptionsGuid = true;
                         }
                     }
-                    SLPrint("[sl] GUID probe tried=%d found=%d\n", tried, (int)h->hasOptionsGuid);
                 }
+                SLPrint("[sl] GUID probe module=%p tried=%d found=%d\n", (void*)m, tried, (int)h->hasOptionsGuid);
             }
         }
     }
@@ -248,18 +249,17 @@ bool SLHostEvaluate(SLHost* h, VkCommandBuffer cmd,
     // The StructType GUID is guessed from the two v4 UUIDs in the plugin's .rdata; select with
     // SL_NR_GUID=0/1. Nothing is written unless SL_NR_OPTIONS=1.
     if (h->setOptionsFn) {
-        static bool triedOptions = false;
-        if (!triedOptions) {
-            triedOptions = true;
+        {
             char flag[8] = {};
             if (GetEnvironmentVariableA("SL_NR_OPTIONS", flag, sizeof(flag)) > 0 && flag[0] == '1') {
-                static const unsigned char guids[2][16] = {
+                static const unsigned char guids[3][16] = {
                     {0xDD,0x65,0xB8,0xA8,0x3D,0x2E,0x94,0x40,0xAD,0x97,0xE5,0x93,0xA7,0x0C,0x75,0xD6},
                     {0x82,0x5D,0xAB,0x62,0xC1,0xFD,0xC3,0x4D,0xA9,0xDD,0x07,0x0D,0x1D,0x49,0x5D,0x97},
+                    {0xE0,0xDF,0xDF,0x29,0x3A,0x27,0x72,0x4E,0xB4,0x92,0x2D,0xC8,0x23,0xD5,0xB1,0xAD},
                 };
                 char gsel[8] = {};
                 int gi = GetEnvironmentVariableA("SL_NR_GUID", gsel, sizeof(gsel)) > 0 ? atoi(gsel) : 0;
-                if (gi < 0 || gi > 1) gi = 0;
+                if (gi < 0 || gi > 2) gi = 0;
                 unsigned char options[0x28] = {};
                 *(uint64_t*)(options + 0x00) = 0;
                 memcpy(options + 0x08, guids[gi], 16);
