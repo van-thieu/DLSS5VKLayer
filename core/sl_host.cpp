@@ -35,6 +35,8 @@ struct SLHost {
     PFun_slIsFeatureSupported* isSupported = nullptr;
     sl::FrameToken* token = nullptr;
     void* setOptionsFn = nullptr;
+    unsigned char optionsGuid[16] = {};
+    bool hasOptionsGuid = false;
     bool inited = false;
     bool deviceSet = false;
 };
@@ -74,7 +76,8 @@ SLHost* SLHostCreate(VkInstance instance, VkPhysicalDevice physical, VkDevice de
     pref.numPathsToPlugins = 1;
     pref.applicationId = applicationId;
     pref.renderAPI = sl::RenderAPI::eVulkan;
-    pref.flags = sl::PreferenceFlags::eDisableCLStateTracking;
+    pref.flags = sl::PreferenceFlags::eDisableCLStateTracking |
+                   sl::PreferenceFlags::eUseFrameBasedResourceTagging;
 
     sl::Result r = h->init(pref, sl::kSDKVersion);
     sl::Result r2 = sl::Result::eErrorIO;
@@ -108,33 +111,57 @@ SLHost* SLHostCreate(VkInstance instance, VkPhysicalDevice physical, VkDevice de
     r = h->getFunction(sl::kFeatureDLSS_NR, "slDLSSNRSetOptions", fn);
     h->setOptionsFn = fn;
     SLPrint("[sl] slDLSSNRSetOptions=%llu ptr=%p\n", (unsigned long long)r, fn);
+
+    // Brute-force the private DLSSNROptions StructType GUID from the plugin's .rdata.
+    // It is a v4 UUID: Data3 high nibble 4 at byte 7, variant 8/9/a/b at byte 8.
     if (fn) {
-        // Test the two v4 UUID candidates found in sl.dlss_nr.dll .rdata.
-        static const unsigned char guids[2][16] = {
-            {0xDD,0x65,0xB8,0xA8,0x3D,0x2E,0x94,0x40,0xAD,0x97,0xE5,0x93,0xA7,0x0C,0x75,0xD6},
-            {0x82,0x5D,0xAB,0x62,0xC1,0xFD,0xC3,0x4D,0xA9,0xDD,0x07,0x0D,0x1D,0x49,0x5D,0x97},
-        };
-        using ByValue = sl::Result (*)(uint32_t, const void*);
-        using ByRef = sl::Result (*)(const sl::ViewportHandle&, const void*);
-        using OneArg = sl::Result (*)(const void*);
-        auto byValue = reinterpret_cast<ByValue>(fn);
-        auto byRef = reinterpret_cast<ByRef>(fn);
-        auto oneArg = reinterpret_cast<OneArg>(fn);
-        sl::ViewportHandle vp(0);
-        for (int i = 0; i < 2; ++i) {
-            unsigned char buf[512] = {};
-            memcpy(buf, guids[i], 16);
-            buf[16] = 1;  // BaseStructure::structVersion = kStructVersion1
-            for (int sig = 0; sig < 3; ++sig) {
-                DWORD seh = 0;
-                sl::Result rr = sl::Result::eErrorIO;
-                if (sig == 0) rr = Guarded([&] { return byValue(0u, buf); }, sl::Result::eErrorIO, &seh);
-                else if (sig == 1) rr = Guarded([&] { return byRef(vp, buf); }, sl::Result::eErrorIO, &seh);
-                else rr = Guarded([&] { return oneArg(buf); }, sl::Result::eErrorIO, &seh);
-                SLPrint("[sl] GUID %d sig %d -> %llu seh=%#x\n", i, sig, (unsigned long long)rr, seh);
+        auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(mod);
+        if (dos && dos->e_magic == IMAGE_DOS_SIGNATURE) {
+            auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>((const unsigned char*)mod + dos->e_lfanew);
+            if (nt && nt->Signature == IMAGE_NT_SIGNATURE) {
+                const IMAGE_SECTION_HEADER* sec = IMAGE_FIRST_SECTION(nt);
+                for (uint32_t si = 0; si < nt->FileHeader.NumberOfSections; ++si, ++sec) {
+                    if (strncmp((const char*)sec->Name, ".rdata", 6) != 0) continue;
+                    const unsigned char* base = (const unsigned char*)mod + sec->VirtualAddress;
+                    const size_t size = sec->Misc.VirtualSize;
+                    using SetOptions = sl::Result (*)(const sl::ViewportHandle&, const void*);
+                    int tried = 0;
+                    for (size_t off = 0; off + 16 <= size && tried < 256; off += 4) {
+                        const unsigned char* g = base + off;
+                        if ((g[7] & 0xf0) != 0x40 || (g[8] & 0xc0) != 0x80) continue;
+                        unsigned char options[512] = {};
+                        memcpy(options, g, 16);
+                        *(uint32_t*)(options + 16) = 1;
+                        *(uint32_t*)(options + 0xd8) = 1920;
+                        *(uint32_t*)(options + 0xdc) = 1080;
+                        *(uint32_t*)(options + 0xe0) = 1920;
+                        *(uint32_t*)(options + 0xe4) = 1080;
+                        *(float*)(options + 0xf8) = 1.0f;
+                        *(float*)(options + 0xfc) = 1.0f;
+                        *(float*)(options + 0x100) = 1.0f;
+                        *(float*)(options + 0x114) = -1.0f;
+                        options[0x122] = 1;
+                        DWORD seh = 0;
+                        sl::ViewportHandle vp(0);
+                        const sl::Result rr = Guarded<sl::Result>([&]() -> sl::Result {
+                            return ((SetOptions)fn)(vp, options);
+                        }, sl::Result::eErrorIO, &seh);
+                        ++tried;
+                        if (seh == 0 && rr == sl::Result::eOk) {
+                            Log("[sl] DLSSNROptions GUID found at rva=%llx bytes=%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x",
+                                (unsigned long long)(sec->VirtualAddress + off),
+                                g[0],g[1],g[2],g[3],g[4],g[5],g[6],g[7],g[8],g[9],g[10],g[11],g[12],g[13],g[14],g[15]);
+                            memcpy(h->optionsGuid, g, 16);
+                            h->hasOptionsGuid = true;
+                            break;
+                        }
+                    }
+                    SLPrint("[sl] GUID probe tried=%d found=%d\n", tried, (int)h->hasOptionsGuid);
+                }
             }
         }
     }
+
     return h;
 }
 
@@ -219,17 +246,46 @@ bool SLHostEvaluate(SLHost* h, VkCommandBuffer cmd,
         }
     }
 
+    // Try the plugin's private options entry point with a populated DLSSNROptions buffer.
+    // The StructType GUID is guessed from the two v4 UUIDs in the plugin's .rdata; select with
+    // SL_NR_GUID=0/1. Nothing is written unless SL_NR_OPTIONS=1.
     if (h->setOptionsFn) {
-        unsigned char options[512] = {};
-        static bool tried = false;
-        if (!tried) {
-            tried = true;
-            using A = sl::Result (*)(uint32_t, const void*);
-            using B = sl::Result (*)(const sl::ViewportHandle&, const void*);
-            using C = sl::Result (*)(const void*);
-            Log("[sl] setOptions A(uint,ptr)=%llu", (unsigned long long)((A)h->setOptionsFn)(0u, options));
-            Log("[sl] setOptions B(vp,ptr)=%llu", (unsigned long long)((B)h->setOptionsFn)(viewport, options));
-            Log("[sl] setOptions C(ptr)=%llu", (unsigned long long)((C)h->setOptionsFn)(options));
+        static bool triedOptions = false;
+        if (!triedOptions) {
+            triedOptions = true;
+            char flag[8] = {};
+            if (GetEnvironmentVariableA("SL_NR_OPTIONS", flag, sizeof(flag)) > 0 && flag[0] == '1') {
+                static const unsigned char guids[2][16] = {
+                    {0xDD,0x65,0xB8,0xA8,0x3D,0x2E,0x94,0x40,0xAD,0x97,0xE5,0x93,0xA7,0x0C,0x75,0xD6},
+                    {0x82,0x5D,0xAB,0x62,0xC1,0xFD,0xC3,0x4D,0xA9,0xDD,0x07,0x0D,0x1D,0x49,0x5D,0x97},
+                };
+                char gsel[8] = {};
+                int gi = GetEnvironmentVariableA("SL_NR_GUID", gsel, sizeof(gsel)) > 0 ? atoi(gsel) : 0;
+                if (gi < 0 || gi > 1) gi = 0;
+                unsigned char options[512] = {};
+                memcpy(options, guids[gi], 16);
+                *(uint32_t*)(options + 16) = 1;                 // structVersion
+                *(uint32_t*)(options + 0xd0) = 0;               // subrect baseX
+                *(uint32_t*)(options + 0xd4) = 0;               // subrect baseY
+                *(uint32_t*)(options + 0xd8) = width;
+                *(uint32_t*)(options + 0xdc) = height;
+                *(uint32_t*)(options + 0xe0) = width;
+                *(uint32_t*)(options + 0xe4) = height;
+                *(float*)(options + 0xf8) = 1.0f;               // intensity
+                *(float*)(options + 0xfc) = 1.0f;               // local tone
+                *(float*)(options + 0x100) = 1.0f;              // local structure
+                *(uint32_t*)(options + 0x108) = 0;              // style
+                options[0x110] = 0;                             // auto mask
+                *(float*)(options + 0x114) = -1.0f;             // skin structure
+                *(uint32_t*)(options + 0x11c) = 0;              // mask blend
+                options[0x122] = 1;                             // UI correction
+                using SetOptions = sl::Result (*)(const sl::ViewportHandle&, const void*);
+                DWORD seh = 0;
+                sl::Result rr = Guarded([&] { return ((SetOptions)h->setOptionsFn)(viewport, options); },
+                                        sl::Result::eErrorIO, &seh);
+                SLPrint("[sl] slDLSSNRSetOptions guid %d -> %llu seh=%#x\n", gi,
+                        (unsigned long long)rr, seh);
+            }
         }
     }
 
