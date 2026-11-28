@@ -70,6 +70,7 @@ FrameSettings FrameSettings::Read(const ShmHeader* h) {
     FrameSettings s;
     if (!h) return s;
     s.transferStrength = BitsToFloat(h->transferStrengthBits.load());
+    s.globalTone = BitsToFloat(h->globalToneBits.load());
     s.colourStrength = BitsToFloat(h->colourStrengthBits.load());
     s.maxRatio = BitsToFloat(h->maxRatioBits.load());
     s.debugScale = BitsToFloat(h->debugScaleBits.load());
@@ -151,6 +152,7 @@ FrameSettings FrameSettings::Read(const ShmHeader* h) {
         return std::min(std::max(v, lo), hi);
     };
     s.transferStrength = clamp(s.transferStrength, 0.0f, 4.0f, 1.0f);
+    s.globalTone = clamp(s.globalTone, 0.0f, 4.0f, 1.0f);
     s.colourStrength = clamp(s.colourStrength, 0.0f, 4.0f, 1.0f);
     s.maxRatio = clamp(s.maxRatio, 1.0f, float(kMaxPasses), 2.0f);
     s.debugScale = clamp(s.debugScale, 0.01f, 100.0f, 1.0f);
@@ -1149,7 +1151,10 @@ DlssNrConstants Composition::BaseConstants(const FrameSettings& s) const {
     DlssNrConstants c{};
 
     c.WhitePoint = (_holding && _frameCaptured) ? _heldWhitePoint : ResolvedWhitePoint(s);
-    c.TransferStrength = s.transferStrength;
+    // Global tone is WWM-side: the model has no DLSSNR.GlobalToneStrength key. Fold it into the
+    // transfer strength so the control reaches the frame instead of dying in the NGX block. The
+    // default of 1.0 is exactly the old value, so existing profiles are byte-identical.
+    c.TransferStrength = std::min(std::max(s.transferStrength * s.globalTone, 0.0f), 4.0f);
     c.ColourStrength = s.colourStrength;
     c.MaxRatio = s.maxRatio;
     c.DebugView = s.debugView;

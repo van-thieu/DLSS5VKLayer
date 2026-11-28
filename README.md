@@ -28,9 +28,20 @@ rest of this README describes the fork rather than upstream.
 - **Per-pass settings really compound.** Each pass blends its model output with its input, so a
   low intensity is a gentle refinement instead of a flattened picture. A toggle in the Passes
   dialog shares strength across active passes; another enables per-pass mode for a pass and makes
-  the main model controls read-only while it is on.
+  the main model controls read-only while it is on. Turning that toggle **off** clears all that
+  pass's override bits — leaving the field checkboxes ticked while the master was off used to pin
+  every pass to `1.0` and silently defeat the main sliders.
 - **Sharpness is applied by the layer.** `nvngx_dlssnr.dll` has no sharpening parameter, so the
   GUI slider drives an unsharp mask on the composed frame rather than an NGX key nobody reads.
+- **Model sliders reach the running feature.** Intensity, tone, structure, skin structure, style,
+  preset, auto mask and mask blend mode are written at feature creation *and* before every
+  evaluate, as the reference Vulkan forwarder does. The helper also probes the driver parameter
+  block for the real `Set(float)` / `Get(float)` vtable slots; the header's declared slots silently
+  dropped every float write, which made all the strength controls look dead.
+- **Global tone is a composition control.** WWM's `DLSSNRGlobalToneStrength` is not an NGX key; the
+  layer applies it as a multiplier on the composition's tone transfer, with `1.0` preserving the
+  old picture. Performance mode and model mask are shown for WWM parity only — the model has no
+  matching parameter.
 - **Motion units are effective.** The selected scale now reaches the model at create and evaluate
   time instead of being overwritten with `1.0` on every frame.
 - **Game profiles are published** under [`game_profiles/`](game_profiles/), grouped by the GPU they
@@ -43,6 +54,24 @@ Fork-specific environment controls:
 ```text
 DLSSNR_ALLOW_OVERLAY=1          keep the layer active in Steam's auxiliary processes
 ```
+
+## Where Winds Meet / DLSS 5 NR
+
+Detailed findings, WWM's default parameters, enum meanings, the tested model
+versions and the current limitations are documented in [`NR_FINDINGS.md`](NR_FINDINGS.md).
+
+Short version: DLSS 5 NR **does** execute under Proton (the helper creates NGX
+feature 18 in a Windows PE under Wine), but a clearly visible composed result in
+Where Winds Meet is still unconfirmed. The in-game Neural Rendering toggle never
+appears on Linux. The model sliders now reach the running feature at both create
+and evaluate time, and WWM's global tone is applied by the layer's composition;
+restart the helper and the game to load the rebuilt binaries before judging the
+picture.
+
+GUI controls are typed: toggles for booleans, dropdowns for enums (Style, Preset,
+Performance mode, Mask blend mode, motion/HDR/compare modes, etc.) and sliders
+for numeric values. Shared-memory protocol is version 22; all three processes
+(layer, helper, GUI) must be rebuilt together when it changes.
 
 ## Features
 
@@ -470,7 +499,13 @@ The generated optical-flow field is in pixel units, so **Pixels** is the matchin
 Normalised and UV scale the field for a model that expects those units.
 
 **Sharpness** (Rendering → Neural rendering) is an unsharp mask applied by the layer to the final
-composed frame, not a model parameter — the DLSS-NR DLL has no sharpening input.
+composed frame, not a model parameter — the DLSS-NR DLL has no sharpening input. **Global tone** in
+the same group is likewise applied by the layer, as a multiplier on the tone transfer: `1.0` is
+neutral, `0` keeps the game's own light, and values above `1` push the model's relighting further.
+**Performance mode** and **Model mask** are WWM-config parity controls with no matching NGX key, so
+they do not change the image. Intensity, local structure, local tone and skin structure are capped at
+`1.0` (skin `-1..1`) because 310.9 renders larger values identically to `1.0`; drag **down** from the
+default to see their effect.
 
 The profile dropdown above the list holds saved profiles. **Save** writes the current settings under
 the name it asks for, pre-filled with the selected profile's name; the **✕** beside an entry

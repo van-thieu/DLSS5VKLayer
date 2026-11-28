@@ -46,6 +46,10 @@ const Setting kSettings[] = {
     { "localstructure", &ShmHeader::localStructureBits, true, "local structure strength" },
     { "skinstructure", &ShmHeader::skinStructureBits, true, "-1 follows local structure" },
     { "sharpness", &ShmHeader::sharpnessBits, true, "sharpness" },
+    { "globaltone", &ShmHeader::globalToneBits, true, "WWM global tone strength (no NGX key)" },
+    { "perfmode", &ShmHeader::perfModeBits, false, "0 off, 6 DLAA (WWM-side, no NGX key)" },
+    { "maskblend", &ShmHeader::maskBlendBits, false, "DLSSNR.MaskBlendMode, 0 default" },
+    { "modelmask", &ShmHeader::modelMaskBits, false, "WWM model bitmask (no NGX key)" },
     { "detail", &ShmHeader::transferStrengthBits, true, "how much of the edit lands, 0-4" },
     { "colour", &ShmHeader::colourStrengthBits, true, "how much of its colour comes with it, 0-4" },
     { "guard", &ShmHeader::maxRatioBits, true, "highlight guard, the most a pixel may move" },
@@ -156,7 +160,8 @@ bool ApplySetting(ShmHeader* h, const char* name, const char* value) {
         // is what tells the helper to rebuild rather than to keep using a feature built with the old
         // values. Sharpness is absent: it is read at evaluate, so a running feature follows it.
         static const char* kCreateTime[] = { "preset", "style", "automask", "intensity",
-                                             "localtone", "localstructure", "skinstructure", "passes" };
+                                             "localtone", "localstructure", "skinstructure", "passes",
+                                             "maskblend" };
         for (const char* k : kCreateTime) {
             if (std::strcmp(k, name) == 0) { h->tuningSeq.fetch_add(1); break; }
         }

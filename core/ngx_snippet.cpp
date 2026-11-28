@@ -7,6 +7,7 @@
 #include "logging.h"
 #include "ngx_param.h"
 #include <chrono>
+#include <cmath>
 #include <cstring>
 
 namespace dlssnr {
@@ -115,14 +116,82 @@ static bool ParamSetULL(NVSDK_NGX_Parameter* p, const char* n, unsigned long lon
     Guarded([&] { p->Set(n, v); return true; }, false, seh);
     return *seh == 0;
 }
+
+// The C++ declaration of NVSDK_NGX_Parameter says Set(float) is at slot 2 and Get(float) at slot
+// 14, but the block the driver allocates does not have to follow the header. OptiScaler probes for
+// the real slots at runtime for exactly this reason. Our old code wrote every float through the
+// declared slot, which the uint self-test never covered: the round trip silently returned 0, all
+// model strengths were written into a slot nobody reads, and only Intensity appeared to work
+// because the helper uses that value to blend/skip passes on its own.
+using SetFloatFn = void (NVSDK_CONV *)(void*, const char*, float);
+using GetFloatFn = NVSDK_NGX_Result (NVSDK_CONV *)(void*, const char*, void*);
+static int g_floatSetSlot = -1;
+static int g_floatGetSlot = -1;
+
+static void** VTable(NVSDK_NGX_Parameter* p) { return *reinterpret_cast<void***>(p); }
+
+// Try one (setter, getter) pair. The getter may belong to a different C++ overload, so give it a
+// generously sized buffer and only trust a float that reads back exactly.
+static bool ProbeFloatSlot(NVSDK_NGX_Parameter* p, int setSlot, int getSlot, DWORD* seh) {
+    constexpr float kProbe = 0.123456f;
+    unsigned char raw[16] = {};
+    bool ok = false;
+    Guarded([&] {
+        void** vt = VTable(p);
+        if (!vt[setSlot] || !vt[getSlot]) return true;
+        reinterpret_cast<SetFloatFn>(vt[setSlot])(p, "__floatprobe", kProbe);
+        const NVSDK_NGX_Result r =
+            reinterpret_cast<GetFloatFn>(vt[getSlot])(p, "__floatprobe", raw);
+        if (NVSDK_NGX_SUCCEED(r)) {
+            float back = 0.0f;
+            std::memcpy(&back, raw, sizeof(back));
+            ok = std::fabs(back - kProbe) < 1e-5f;
+        }
+        return true;
+    }, false, seh);
+    return *seh == 0 && ok;
+}
+
+// Called once, after the parameter block has been allocated. Falls back to the declared C++
+// overloads only if no pair round-trips (the fallback is what OwnParam uses).
+static void DiscoverFloatSlots(NVSDK_NGX_Parameter* p) {
+    DWORD seh = 0;
+    for (int s = 0; s < 8 && g_floatSetSlot < 0; ++s) {
+        for (int g = 8; g < 16; ++g) {
+            if (ProbeFloatSlot(p, s, g, &seh)) {
+                g_floatSetSlot = s;
+                g_floatGetSlot = g;
+                break;
+            }
+        }
+    }
+    Log("[params] float vtable slots: set=%d get=%d (seh=%#x)", g_floatSetSlot, g_floatGetSlot, seh);
+}
+
 static bool ParamSetF(NVSDK_NGX_Parameter* p, const char* n, float v, DWORD* seh) {
-    Guarded([&] { p->Set(n, v); return true; }, false, seh);
+    if (g_floatSetSlot >= 0) {
+        Guarded([&] {
+            reinterpret_cast<SetFloatFn>(VTable(p)[g_floatSetSlot])(p, n, v);
+            return true;
+        }, false, seh);
+    } else {
+        Guarded([&] { p->Set(n, v); return true; }, false, seh);
+    }
     return *seh == 0;
 }
 static bool ParamGetUI(NVSDK_NGX_Parameter* p, const char* n, unsigned int* v, DWORD* seh) {
     return Guarded([&] { return NVSDK_NGX_SUCCEED(p->Get(n, v)); }, false, seh);
 }
 static bool ParamGetF(NVSDK_NGX_Parameter* p, const char* n, float* v, DWORD* seh) {
+    if (g_floatGetSlot >= 0) {
+        return Guarded([&] {
+            unsigned char raw[16] = {};
+            const NVSDK_NGX_Result r =
+                reinterpret_cast<GetFloatFn>(VTable(p)[g_floatGetSlot])(p, n, raw);
+            if (NVSDK_NGX_SUCCEED(r)) std::memcpy(v, raw, sizeof(*v));
+            return NVSDK_NGX_SUCCEED(r);
+        }, false, seh);
+    }
     return Guarded([&] { return NVSDK_NGX_SUCCEED(p->Get(n, v)); }, false, seh);
 }
 
@@ -348,13 +417,25 @@ bool NgxLoadAndInit(NgxSnippet& s, VkInstance instance, VkPhysicalDevice pd, VkD
             Log("[params] using own NVSDK_NGX_Parameter implementation");
         }
     }
+    DiscoverFloatSlots(s.params);
     {
         DWORD seh2 = 0;
         bool ok = ParamSetUI(s.params, "__selftest", 0xC0FFEE, &seh2);
         unsigned int back = 0;
         ok = ok && ParamGetUI(s.params, "__selftest", &back, &seh2) && back == 0xC0FFEE;
-        Log("[params] round-trip self-test: %s (seh=%#x)", ok ? "PASS" : "FAIL", seh2);
+        Log("[params] round-trip self-test (uint): %s back=%#x (seh=%#x)", ok ? "PASS" : "FAIL",
+            back, seh2);
         if (!ok) { s.disabled = true; return false; }
+
+        // OptiScaler found that the driver's parameter block does not keep a float at the slot the
+        // public header declares, and probes for the real one. Our uint round trip above proves only
+        // that slot; check the float path too, because every model strength is written through it.
+        const float probe = 0.123456f;
+        float fback = 0.0f;
+        bool fok = ParamSetF(s.params, "__floattest", probe, &seh2);
+        fok = fok && ParamGetF(s.params, "__floattest", &fback, &seh2);
+        Log("[params] round-trip self-test (float): %s sent=%.6f back=%.6f (seh=%#x)",
+            fok && std::fabs(fback - probe) < 1e-5f ? "PASS" : "FAIL", probe, fback, seh2);
     }
 
     // Create parameters (extracted_pipeline_notes.md section 4).
@@ -495,22 +576,40 @@ bool NgxLoadAndInit(NgxSnippet& s, VkInstance instance, VkPhysicalDevice pd, VkD
     return created;
 }
 
+// The keys the model actually has. A scan of nvngx_dlssnr.dll finds 61 DLSSNR.* names and these are
+// among them; GlobalToneStrength, PerformanceMode and ModelMask are not, so writing them here only
+// made the controls look alive in the log. Global tone is applied by the layer's composition, and
+// performance mode / model mask are WWM-side settings with no NGX counterpart.
+static bool SetModelTuning(NgxSnippet& s, const NgxTuning& t, bool includePreset, DWORD* seh) {
+    bool ok = true;
+    if (includePreset) ok &= ParamSetUI(s.params, "DLSSNR.Hint.Render.Preset", t.preset, seh);
+    ok &= ParamSetUI(s.params, "DLSSNR.Style", t.style, seh);
+    ok &= ParamSetF(s.params, "DLSSNR.Intensity", t.intensity, seh);
+    ok &= ParamSetF(s.params, "DLSSNR.LocalToneStrength", t.localTone, seh);
+    ok &= ParamSetF(s.params, "DLSSNR.LocalStructureStrength", t.localStructure, seh);
+    ok &= ParamSetF(s.params, "DLSSNR.SkinStructureStrength", t.skinStructure, seh);
+    ok &= ParamSetUI(s.params, "DLSSNR.UseAutoMask", t.autoMask, seh);
+    ok &= ParamSetUI(s.params, "DLSSNR.MaskBlendMode", t.maskBlend, seh);
+    return ok;
+}
+
 void NgxSetCreateTuning(NgxSnippet& s, const NgxTuning& t) {
     if (!s.params) return;
     DWORD seh = 0;
-    bool ok = true;
-    ok &= ParamSetUI(s.params, "DLSSNR.Hint.Render.Preset", t.preset, &seh);
-    ok &= ParamSetUI(s.params, "DLSSNR.Style", t.style, &seh);
-    ok &= ParamSetF(s.params, "DLSSNR.Intensity", t.intensity, &seh);
-    ok &= ParamSetF(s.params, "DLSSNR.LocalToneStrength", t.localTone, &seh);
-    ok &= ParamSetF(s.params, "DLSSNR.LocalStructureStrength", t.localStructure, &seh);
-    ok &= ParamSetF(s.params, "DLSSNR.SkinStructureStrength", t.skinStructure, &seh);
-    ok &= ParamSetUI(s.params, "DLSSNR.UseAutoMask", t.autoMask, &seh);
+    const bool ok = SetModelTuning(s, t, true, &seh);
     if (!ok) Log("[params] create tuning FAILED (seh=%#x)", seh);
     else
         Log("[params] create tuning: preset=%u style=%u intensity=%.2f tone=%.2f structure=%.2f "
-            "skin=%.2f automask=%u",
-            t.preset, t.style, t.intensity, t.localTone, t.localStructure, t.skinStructure, t.autoMask);
+            "skin=%.2f automask=%u maskblend=%u",
+            t.preset, t.style, t.intensity, t.localTone, t.localStructure, t.skinStructure,
+            t.autoMask, t.maskBlend);
+}
+
+void NgxSetEvaluateTuning(NgxSnippet& s, const NgxTuning& t) {
+    if (!s.params) return;
+    DWORD seh = 0;
+    const bool ok = SetModelTuning(s, t, false, &seh);
+    if (!ok && Verbose()) Log("[params] evaluate tuning FAILED (seh=%#x)", seh);
 }
 
 void NgxReleasePass(NgxSnippet& s, uint32_t pass, VkDevice device) {
@@ -651,17 +750,15 @@ void NgxSetResources(NgxSnippet& s, const NVSDK_NGX_Resource_VK& color,
     ps &= ParamSetUI(s.params, "DLSS.Indicator.Invert.Y.Axis", 0u, &seh);
     ps &= ParamSetUI(s.params, "DLSSNR.Enabled", 1u, &seh);
     ps &= ParamSetUI(s.params, "DLSSNR.Reset", 1u, &seh);
-    ps &= ParamSetUI(s.params, "DLSSNR.UICorrection", 0u, &seh);
+    ps &= ParamSetUI(s.params, "DLSSNR.UICorrection", 1u, &seh);
 
-    // Style, Intensity, LocalTone, LocalStructure, SkinStructure and UseAutoMask are deliberately
-    // absent. They used to be written here, every frame, as constants -- which did two harmful
-    // things: it had no effect on the running feature, because the model latches them at creation,
-    // and it left the parameter block holding those constants for whatever created a feature next.
-    // A feature built at any moment other than immediately after NgxSetCreateTuning therefore got
-    // defaults no matter what the user had chosen. They belong to NgxTuning and to create time.
-    //
-    // UseAutoMask was the clearest case: the constant written here was 0, so the automatic skin mask
-    // was forced off regardless of the setting, whose default is on.
+    // Style, Intensity, LocalTone, LocalStructure, SkinStructure, UseAutoMask and MaskBlendMode are
+    // written by NgxSetEvaluateTuning immediately before each dispatch, with the tuning of the pass
+    // being evaluated. They are not constants: writing a fixed set here used to make whichever pass
+    // happened to be built next inherit those values, and leaving them out altogether made the
+    // running feature ignore slider changes until it happened to be rebuilt. Both halves of the
+    // contract are needed -- create time and evaluate time -- which is what the reference Vulkan
+    // forwarder does.
     // Read back once per change rather than once per pass per frame: this runs on every evaluate in
     // a multipass chain, and the readback is a diagnostic, not a step.
     unsigned int autoMask = 0;

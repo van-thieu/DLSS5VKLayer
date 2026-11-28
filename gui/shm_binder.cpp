@@ -3,6 +3,8 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QFormLayout>
+#include <QPair>
+#include <QVector>
 #include <QLineEdit>
 #include <QSignalBlocker>
 #include <QSlider>
@@ -269,6 +271,30 @@ QComboBox* ShmBinder::AddChoice(QFormLayout* form, const QString& label, Field f
         QSignalBlocker block(w);
         const int v = int((_hdr->*field).load());
         w->setCurrentIndex(v < w->count() ? v : 0);
+    });
+    _reloaders.back()();
+    return w;
+}
+
+QComboBox* ShmBinder::AddChoiceValues(QFormLayout* form, const QString& label, Field field,
+                                      const QVector<QPair<QString, uint32_t>>& options,
+                                      const QString& tip, Latch latch) {
+    auto* w = new QComboBox(_parent);
+    for (const auto& option : options) w->addItem(option.first, option.second);
+    w->setToolTip(FormatTip(tip));
+    form->addRow(label, w);
+    connect(w, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this, w, field, latch](int i) {
+                if (i >= 0 && i < w->count()) Write(field, w->itemData(i).toUInt(), latch);
+            });
+    _reloaders.push_back([this, w, field] {
+        if (!_hdr) return;
+        QSignalBlocker block(w);
+        const uint32_t v = (_hdr->*field).load();
+        for (int i = 0; i < w->count(); ++i) {
+            if (w->itemData(i).toUInt() == v) { w->setCurrentIndex(i); return; }
+        }
+        w->setCurrentIndex(0);
     });
     _reloaders.back()();
     return w;

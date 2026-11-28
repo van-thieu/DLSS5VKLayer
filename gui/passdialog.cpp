@@ -102,19 +102,19 @@ void PassDialog::buildPage(uint32_t pass, QWidget* page) {
         return w;
     };
 
-    auto* intensity = makeFloat(0.0, 4.0, 0.05, pc.intensityBits.load());
+    auto* intensity = makeFloat(0.0, 1.0, 0.05, pc.intensityBits.load());
     addRow(tr("Intensity"), kOverrideIntensity, intensity,
            [intensity] { return FloatToBits(float(intensity->doubleValue())); }, {});
 
-    auto* structure = makeFloat(0.0, 4.0, 0.05, pc.localStructureBits.load());
+    auto* structure = makeFloat(0.0, 1.0, 0.05, pc.localStructureBits.load());
     addRow(tr("Local structure"), kOverrideLocalStructure, structure,
            [structure] { return FloatToBits(float(structure->doubleValue())); }, {});
 
-    auto* tone = makeFloat(0.0, 4.0, 0.05, pc.localToneBits.load());
+    auto* tone = makeFloat(0.0, 1.0, 0.05, pc.localToneBits.load());
     addRow(tr("Local tone"), kOverrideLocalTone, tone,
            [tone] { return FloatToBits(float(tone->doubleValue())); }, {});
 
-    auto* skin = makeFloat(-1.0, 4.0, 0.05, pc.skinStructureBits.load());
+    auto* skin = makeFloat(-1.0, 1.0, 0.05, pc.skinStructureBits.load());
     addRow(tr("Skin structure"), kOverrideSkinStructure, skin,
            [skin] { return FloatToBits(float(skin->doubleValue())); }, {});
 
@@ -149,7 +149,19 @@ void PassDialog::writePass(uint32_t pass) {
     if (!hdr || pass >= kMaxPasses) return;
     PassControl& pc = hdr->pass[pass];
 
-    uint32_t mask = enabled[pass] && enabled[pass]->isChecked() ? kPassEnabled : 0u;
+    // A pass that is not explicitly taking itself over must override nothing at all. The field
+    // tick boxes remember their last state while the pass is off, and writing those bits anyway
+    // pinned every pass to 1.0 and made all main-window sliders silently ineffective.
+    if (!enabled[pass] || !enabled[pass]->isChecked()) {
+        if (pc.overrideMask.load() != 0) {
+            pc.overrideMask.store(0);
+            hdr->controlSeq.fetch_add(1);
+            hdr->tuningSeq.fetch_add(1);
+        }
+        return;
+    }
+
+    uint32_t mask = kPassEnabled;
     for (const Row& r : rows[pass]) {
         if (!r.on->isChecked()) continue;
         mask |= r.bit;

@@ -77,20 +77,31 @@ struct NgxTuning {
     float localTone = 1.0f;
     float localStructure = 1.0f;
     float skinStructure = -1.0f;
+    float globalTone = 1.0f;
     uint32_t style = 0;
     uint32_t preset = 0;
     uint32_t autoMask = 1;
+    uint32_t perfMode = 0u;
+    uint32_t maskBlend = 0u;
+    uint32_t modelMask = 0xFFFFFFFFu;
 
     bool operator==(const NgxTuning& o) const {
         return intensity == o.intensity && localTone == o.localTone &&
                localStructure == o.localStructure && skinStructure == o.skinStructure &&
-               style == o.style && preset == o.preset && autoMask == o.autoMask;
+               globalTone == o.globalTone && style == o.style && preset == o.preset &&
+               autoMask == o.autoMask && perfMode == o.perfMode &&
+               maskBlend == o.maskBlend && modelMask == o.modelMask;
     }
     bool operator!=(const NgxTuning& o) const { return !(*this == o); }
 };
 
 // Writes the create-time block. Must be called before NgxCreatePass, never instead of it.
 void NgxSetCreateTuning(NgxSnippet& s, const NgxTuning& t);
+// Writes the same tuning into the block again before every evaluate. The reference Vulkan
+// forwarder does both: a feature reads the values when it is built, and the running feature reads
+// them from the parameter block on each dispatch. Doing only the first made the model sliders look
+// wired in the log while the picture never answered them.
+void NgxSetEvaluateTuning(NgxSnippet& s, const NgxTuning& t);
 void NgxSetHdr(NgxSnippet& s, bool want);
 
 // Loads the snippet, initialises it, and builds pass 0.
