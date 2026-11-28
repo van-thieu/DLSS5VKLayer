@@ -132,8 +132,9 @@ SLHost* SLHostCreate(VkInstance instance, VkPhysicalDevice physical, VkDevice de
                     for (size_t off = 0; off + 16 <= size && tried < 6000; off += 4) {
                         const unsigned char* g = base + off;
                         unsigned char options[512] = {};
-                        memcpy(options, g, 16);
-                        *(uint32_t*)(options + 16) = 1;
+                        *(uint64_t*)(options + 0x00) = 0;            // BaseStructure::next
+                        memcpy(options + 0x08, g, 16);                // StructType GUID
+                        *(uint64_t*)(options + 0x18) = 1;             // structVersion
                         *(uint32_t*)(options + 0xd8) = 1920;
                         *(uint32_t*)(options + 0xdc) = 1080;
                         *(uint32_t*)(options + 0xe0) = 1920;
@@ -153,8 +154,8 @@ SLHost* SLHostCreate(VkInstance instance, VkPhysicalDevice physical, VkDevice de
                             }, sl::Result::eErrorIO, &seh);
                             ++tried;
                             if (seh == 0 && rr == sl::Result::eOk) {
-                                Log("[sl] DLSSNROptions GUID found at rva=%llx sig=%d bytes=%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x",
-                                    (unsigned long long)(sec->VirtualAddress + off), sig,
+                                Log("[sl] DLSSNROptions GUID found at rva=%llx sig=%d result=%llu bytes=%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x",
+                                    (unsigned long long)(sec->VirtualAddress + off), sig, (unsigned long long)rr,
                                     g[0],g[1],g[2],g[3],g[4],g[5],g[6],g[7],g[8],g[9],g[10],g[11],g[12],g[13],g[14],g[15]);
                                 memcpy(h->optionsGuid, g, 16);
                                 h->hasOptionsGuid = true;
