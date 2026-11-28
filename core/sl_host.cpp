@@ -33,6 +33,7 @@ struct SLHost {
     PFun_slSetVulkanInfo* setVulkanInfo = nullptr;
     PFun_slSetConstants* setConstants = nullptr;
     PFun_slIsFeatureSupported* isSupported = nullptr;
+    PFun_slSetFeatureLoaded* setFeatureLoaded = nullptr;
     sl::FrameToken* token = nullptr;
     void* setOptionsFn = nullptr;
     unsigned char optionsGuid[16] = {};
@@ -60,6 +61,7 @@ SLHost* SLHostCreate(VkInstance instance, VkPhysicalDevice physical, VkDevice de
     h->setVulkanInfo = reinterpret_cast<PFun_slSetVulkanInfo*>(reinterpret_cast<void*>(GetProcAddress(mod, "slSetVulkanInfo")));
     h->setConstants = reinterpret_cast<PFun_slSetConstants*>(reinterpret_cast<void*>(GetProcAddress(mod, "slSetConstants")));
     h->isSupported = reinterpret_cast<PFun_slIsFeatureSupported*>(reinterpret_cast<void*>(GetProcAddress(mod, "slIsFeatureSupported")));
+    h->setFeatureLoaded = reinterpret_cast<PFun_slSetFeatureLoaded*>(reinterpret_cast<void*>(GetProcAddress(mod, "slSetFeatureLoaded")));
     if (!h->init || !h->getRequirements || !h->getFunction || !h->getToken ||
         !h->evaluate || !h->setVulkanInfo || !h->setConstants) {
         SLPrint("[sl] missing exports\n");
@@ -84,11 +86,17 @@ SLHost* SLHostCreate(VkInstance instance, VkPhysicalDevice physical, VkDevice de
     SLPrint("[sl] slInit=%llu\n", (unsigned long long)r);
     if (r != sl::Result::eOk) { delete h; return nullptr; }
     h->inited = true;
+    if (h->setFeatureLoaded) {
+        sl::Result lr = h->setFeatureLoaded(sl::kFeatureDLSS_NR, true);
+        SLPrint("[sl] setFeatureLoaded=%llu\n", (unsigned long long)lr);
+    }
 
     sl::FeatureRequirements req{};
     r = h->getRequirements(sl::kFeatureDLSS_NR, req);
-    SLPrint("[sl] requirements=%llu flags=%llu maxViewports=%u\n",
-            (unsigned long long)r, (unsigned long long)req.flags, req.maxNumViewports);
+    SLPrint("[sl] requirements=%llu flags=%llu maxViewports=%u requiredTags=%u\n",
+            (unsigned long long)r, (unsigned long long)req.flags, req.maxNumViewports, req.numRequiredTags);
+    for (uint32_t ti = 0; ti < req.numRequiredTags && req.requiredTags; ++ti)
+        SLPrint("[sl] requiredTag[%u]=%d\n", ti, (int)req.requiredTags[ti]);
 
     sl::VulkanInfo vi{};
     vi.instance = instance;
@@ -227,17 +235,17 @@ bool SLHostEvaluate(SLHost* h, VkCommandBuffer cmd,
     constants.motionVectorsDilated = sl::Boolean::eFalse;
     constants.motionVectorsJittered = sl::Boolean::eFalse;
 
-    sl::ResourceTag tags[6];
-    tags[0] = sl::ResourceTag(&rc, sl::kBufferTypeHUDLessColor, sl::ResourceLifecycle::eOnlyValidNow);
-    tags[1] = sl::ResourceTag(&rc, sl::kBufferTypeScalingInputColor, sl::ResourceLifecycle::eOnlyValidNow);
-    tags[2] = sl::ResourceTag(&ro, sl::kBufferTypeScalingOutputColor, sl::ResourceLifecycle::eOnlyValidNow);
-    tags[3] = sl::ResourceTag(&ro, sl::kBufferTypeBackbuffer, sl::ResourceLifecycle::eOnlyValidNow);
-    tags[4] = sl::ResourceTag(&rm, sl::kBufferTypeMotionVectors, sl::ResourceLifecycle::eOnlyValidNow);
-    tags[5] = sl::ResourceTag(&rd, sl::kBufferTypeDepth, sl::ResourceLifecycle::eOnlyValidNow);
+    sl::ResourceTag tags[5];
+    tags[0] = sl::ResourceTag(&rc, sl::kBufferTypeScalingInputColor, sl::ResourceLifecycle::eOnlyValidNow);
+    tags[1] = sl::ResourceTag(&ro, sl::kBufferTypeScalingOutputColor, sl::ResourceLifecycle::eOnlyValidNow);
+    tags[2] = sl::ResourceTag(&ro, sl::kBufferTypeBackbuffer, sl::ResourceLifecycle::eOnlyValidNow);
+    tags[3] = sl::ResourceTag(&rm, sl::kBufferTypeMotionVectors, sl::ResourceLifecycle::eOnlyValidNow);
+    tags[4] = sl::ResourceTag(&rd, sl::kBufferTypeDepth, sl::ResourceLifecycle::eOnlyValidNow);
     sl::ViewportHandle viewport(0);
-    const sl::BaseStructure* inputs[] = { &viewport, &constants, &tags[0], &tags[1], &tags[2], &tags[3], &tags[4], &tags[5] };
+    const sl::BaseStructure* inputs[] = { &constants, &tags[0], &tags[1], &tags[2], &tags[3], &tags[4] };
 
-    if (!h->token) {
+    h->token = nullptr;
+    {
         sl::Result r = h->getToken(h->token, nullptr);
         if (r != sl::Result::eOk || !h->token) {
             SLPrint("[sl] getToken=%llu\n", (unsigned long long)r);
@@ -282,7 +290,7 @@ bool SLHostEvaluate(SLHost* h, VkCommandBuffer cmd,
         if (cr != sl::Result::eOk) { Log("[sl] setConstants=%llu", (unsigned long long)cr); return false; }
     }
 
-    sl::Result r = h->evaluate(sl::kFeatureDLSS_NR, *h->token, inputs, 8, (sl::CommandBuffer*)cmd);
+    sl::Result r = h->evaluate(sl::kFeatureDLSS_NR, *h->token, inputs, 6, (sl::CommandBuffer*)cmd);
     if (r != sl::Result::eOk) SLPrint("[sl] evaluate=%llu\n", (unsigned long long)r);
     return r == sl::Result::eOk;
 }
