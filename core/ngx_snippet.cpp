@@ -263,7 +263,9 @@ bool NgxLoadAndInit(NgxSnippet& s, VkInstance instance, VkPhysicalDevice pd, VkD
     // Path A: drive WWM's Streamline NR plugin through the official SL host API.
     // Enabled explicitly so the proven direct-NGX path stays available as a fallback.
     char useSl[8] = {};
-    if (GetEnvironmentVariableA("DLSSNR_USE_STREAMLINE", useSl, sizeof(useSl)) > 0 && useSl[0] == '1') {
+    const DWORD useSlLen = GetEnvironmentVariableA("DLSSNR_USE_STREAMLINE", useSl, sizeof(useSl));
+    Log("[sl] env flag len=%lu value='%s' (NgxLoadAndInit)", (unsigned long)useSlLen, useSl);
+    if (useSlLen > 0 && useSl[0] == '1') {
         static const wchar_t* kPluginDir =
             L"Z:\\run\\media\\vthieu\\Games\\SteamLibrary\\steamapps\\common\\Where Winds Meet\\Engine\\Binaries\\Win64r\\Streamline";
         s.slHost = SLHostCreate(instance, pd, device, kPluginDir, 0x0E658700u);

@@ -131,19 +131,11 @@ SLHost* SLHostCreate(VkInstance instance, VkPhysicalDevice physical, VkDevice de
                     int tried = 0;
                     for (size_t off = 0; off + 16 <= size && tried < 6000; off += 4) {
                         const unsigned char* g = base + off;
-                        unsigned char options[512] = {};
+                        unsigned char options[0x28] = {};
                         *(uint64_t*)(options + 0x00) = 0;            // BaseStructure::next
                         memcpy(options + 0x08, g, 16);                // StructType GUID
                         *(uint64_t*)(options + 0x18) = 1;             // structVersion
-                        *(uint32_t*)(options + 0xd8) = 1920;
-                        *(uint32_t*)(options + 0xdc) = 1080;
-                        *(uint32_t*)(options + 0xe0) = 1920;
-                        *(uint32_t*)(options + 0xe4) = 1080;
-                        *(float*)(options + 0xf8) = 1.0f;
-                        *(float*)(options + 0xfc) = 1.0f;
-                        *(float*)(options + 0x100) = 1.0f;
-                        *(float*)(options + 0x114) = -1.0f;
-                        options[0x122] = 1;
+                        *(double*)(options + 0x20) = 1.0;             // only payload field
                         sl::ViewportHandle vp(0);
                         for (int sig = 0; sig < 3 && !h->hasOptionsGuid; ++sig) {
                             DWORD seh = 0;
@@ -268,23 +260,11 @@ bool SLHostEvaluate(SLHost* h, VkCommandBuffer cmd,
                 char gsel[8] = {};
                 int gi = GetEnvironmentVariableA("SL_NR_GUID", gsel, sizeof(gsel)) > 0 ? atoi(gsel) : 0;
                 if (gi < 0 || gi > 1) gi = 0;
-                unsigned char options[512] = {};
-                memcpy(options, guids[gi], 16);
-                *(uint32_t*)(options + 16) = 1;                 // structVersion
-                *(uint32_t*)(options + 0xd0) = 0;               // subrect baseX
-                *(uint32_t*)(options + 0xd4) = 0;               // subrect baseY
-                *(uint32_t*)(options + 0xd8) = width;
-                *(uint32_t*)(options + 0xdc) = height;
-                *(uint32_t*)(options + 0xe0) = width;
-                *(uint32_t*)(options + 0xe4) = height;
-                *(float*)(options + 0xf8) = 1.0f;               // intensity
-                *(float*)(options + 0xfc) = 1.0f;               // local tone
-                *(float*)(options + 0x100) = 1.0f;              // local structure
-                *(uint32_t*)(options + 0x108) = 0;              // style
-                options[0x110] = 0;                             // auto mask
-                *(float*)(options + 0x114) = -1.0f;             // skin structure
-                *(uint32_t*)(options + 0x11c) = 0;              // mask blend
-                options[0x122] = 1;                             // UI correction
+                unsigned char options[0x28] = {};
+                *(uint64_t*)(options + 0x00) = 0;
+                memcpy(options + 0x08, guids[gi], 16);
+                *(uint64_t*)(options + 0x18) = 1;
+                *(double*)(options + 0x20) = 1.0;
                 using SetOptions = sl::Result (*)(const sl::ViewportHandle&, const void*);
                 DWORD seh = 0;
                 sl::Result rr = Guarded([&] { return ((SetOptions)h->setOptionsFn)(viewport, options); },
