@@ -113,7 +113,8 @@ SLHost* SLHostCreate(VkInstance instance, VkPhysicalDevice physical, VkDevice de
     SLPrint("[sl] slDLSSNRSetOptions=%llu ptr=%p\n", (unsigned long long)r, fn);
 
     // Brute-force the private DLSSNROptions StructType GUID from the plugin's .rdata.
-    // It is a v4 UUID: Data3 high nibble 4 at byte 7, variant 8/9/a/b at byte 8.
+    // No v4 filter: the constant may not follow the UUID version convention. Try every 16-byte
+    // window and every plausible signature, guarded, and keep only a clean eOk result.
     if (fn) {
         auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(mod);
         if (dos && dos->e_magic == IMAGE_DOS_SIGNATURE) {
@@ -124,11 +125,12 @@ SLHost* SLHostCreate(VkInstance instance, VkPhysicalDevice physical, VkDevice de
                     if (strncmp((const char*)sec->Name, ".rdata", 6) != 0) continue;
                     const unsigned char* base = (const unsigned char*)mod + sec->VirtualAddress;
                     const size_t size = sec->Misc.VirtualSize;
-                    using SetOptions = sl::Result (*)(const sl::ViewportHandle&, const void*);
+                    using A = sl::Result (*)(uint32_t, const void*);
+                    using B = sl::Result (*)(const sl::ViewportHandle&, const void*);
+                    using C = sl::Result (*)(const void*);
                     int tried = 0;
-                    for (size_t off = 0; off + 16 <= size && tried < 256; off += 4) {
+                    for (size_t off = 0; off + 16 <= size && tried < 6000; off += 4) {
                         const unsigned char* g = base + off;
-                        if ((g[7] & 0xf0) != 0x40 || (g[8] & 0xc0) != 0x80) continue;
                         unsigned char options[512] = {};
                         memcpy(options, g, 16);
                         *(uint32_t*)(options + 16) = 1;
@@ -141,19 +143,22 @@ SLHost* SLHostCreate(VkInstance instance, VkPhysicalDevice physical, VkDevice de
                         *(float*)(options + 0x100) = 1.0f;
                         *(float*)(options + 0x114) = -1.0f;
                         options[0x122] = 1;
-                        DWORD seh = 0;
                         sl::ViewportHandle vp(0);
-                        const sl::Result rr = Guarded<sl::Result>([&]() -> sl::Result {
-                            return ((SetOptions)fn)(vp, options);
-                        }, sl::Result::eErrorIO, &seh);
-                        ++tried;
-                        if (seh == 0 && rr == sl::Result::eOk) {
-                            Log("[sl] DLSSNROptions GUID found at rva=%llx bytes=%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x",
-                                (unsigned long long)(sec->VirtualAddress + off),
-                                g[0],g[1],g[2],g[3],g[4],g[5],g[6],g[7],g[8],g[9],g[10],g[11],g[12],g[13],g[14],g[15]);
-                            memcpy(h->optionsGuid, g, 16);
-                            h->hasOptionsGuid = true;
-                            break;
+                        for (int sig = 0; sig < 3 && !h->hasOptionsGuid; ++sig) {
+                            DWORD seh = 0;
+                            const sl::Result rr = Guarded<sl::Result>([&]() -> sl::Result {
+                                if (sig == 0) return ((A)fn)(0u, options);
+                                if (sig == 1) return ((B)fn)(vp, options);
+                                return ((C)fn)(options);
+                            }, sl::Result::eErrorIO, &seh);
+                            ++tried;
+                            if (seh == 0 && rr == sl::Result::eOk) {
+                                Log("[sl] DLSSNROptions GUID found at rva=%llx sig=%d bytes=%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x",
+                                    (unsigned long long)(sec->VirtualAddress + off), sig,
+                                    g[0],g[1],g[2],g[3],g[4],g[5],g[6],g[7],g[8],g[9],g[10],g[11],g[12],g[13],g[14],g[15]);
+                                memcpy(h->optionsGuid, g, 16);
+                                h->hasOptionsGuid = true;
+                            }
                         }
                     }
                     SLPrint("[sl] GUID probe tried=%d found=%d\n", tried, (int)h->hasOptionsGuid);
