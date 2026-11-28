@@ -3026,6 +3026,64 @@ static bool ProcessFrame(NeuralState& ns, ShmMap& shm) {
 
     if (!last) return false;
 
+    // Read-only diagnostic: every 120 frames, copy a small centre patch of the model's input and
+    // its final output into the existing readback staging buffer and log their mean difference.
+    // This changes no NGX parameter and no rendered pixel; it only says whether the feature is
+    // returning an identity answer or whether the wrong surface is being handed back.
+    if ((ns.evaluates % 120) == 0 && ns.vk.readStaging && ns.vk.readMap) {
+        constexpr uint32_t kPatch = 16;
+        constexpr size_t kPatchBytes = kPatch * kPatch * 8;
+        const bool out16 = last->format == VK_FORMAT_R16G16B16A16_UNORM ||
+                           last->format == VK_FORMAT_R16G16B16A16_SFLOAT;
+        const bool outFloat = last->format == VK_FORMAT_R16G16B16A16_SFLOAT;
+        uint8_t inPatch[kPatchBytes] = {}, outPatch[kPatchBytes] = {};
+        const auto copyPatch = [&](GpuImage& img, uint8_t* dst) {
+            if (!BeginCmd(ns.vk.cmdScratch)) return false;
+            TransitionImage(ns.vk, ns.vk.cmdScratch, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                            VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+                            VK_ACCESS_TRANSFER_READ_BIT,
+                            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+                            VK_PIPELINE_STAGE_TRANSFER_BIT);
+            VkBufferImageCopy region{};
+            region.imageSubresource = { img.aspect(), 0, 0, 1 };
+            const int32_t off = int32_t(kPatch / 2);
+            region.imageOffset = { int32_t(img.width / 2) - off,
+                                   int32_t(img.height / 2) - off, 0 };
+            region.imageExtent = { kPatch, kPatch, 1 };
+            vkCmdCopyImageToBuffer(ns.vk.cmdScratch, img.image,
+                                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                   ns.vk.readStaging, 1, &region);
+            if (!SubmitAndWait(ns.vk, ns.vk.cmdScratch)) return false;
+            std::memcpy(dst, ns.vk.readMap, kPatchBytes);
+            return true;
+        };
+        if (copyPatch(ns.colorIn, inPatch) && copyPatch(*last, outPatch)) {
+            // The model chain may be 16-bit while the proxy is 8-bit. Normalise both to 8-bit
+            // before comparing, or the difference is just the encoding width.
+            const auto to8 = [](const uint8_t* p, bool sixteen, bool isFloat, uint32_t c) {
+                if (!sixteen) return int(p[c]);
+                uint16_t v = 0;
+                std::memcpy(&v, p + c * 2, sizeof(v));
+                if (isFloat) {
+                    const float f = HalfToFloat(v) * 255.0f;
+                    return int(std::min(std::max(f, 0.0f), 255.0f));
+                }
+                return int(v >> 8);
+            };
+            uint64_t sum = 0;
+            for (uint32_t j = 0; j < kPatch * kPatch; ++j) {
+                const uint8_t* a = inPatch + size_t(j) * 4;
+                const uint8_t* b = outPatch + size_t(j) * (out16 ? 8 : 4);
+                for (uint32_t c = 0; c < 3; ++c) {
+                    const int d = to8(a, false, false, c) - to8(b, out16, outFloat, c);
+                    sum += uint64_t(d < 0 ? -d : d);
+                }
+            }
+            Log("[diag] model in/out patch mean absolute difference = %.4f (of 255, normalised)",
+                double(sum) / double(kPatch * kPatch * 3));
+        }
+    }
+
     // Down to the transport's format, once, now that the passes are finished.
     //
     // A blit rather than a copy, because the chain is sixteen bits and the transport is eight and
@@ -3115,6 +3173,22 @@ static bool ProcessFrame(NeuralState& ns, ShmMap& shm) {
         if (!ns.vk.transportOut) std::memcpy(shm.outPixels, ns.vk.readMap, bytes);
     }
     const double tDone = time ? NowMs() : 0.0;
+
+    if ((ns.evaluates % 120) == 0) {
+        uint64_t sum = 0;
+        size_t count = 0;
+        for (size_t y = (h / 2) - 8; y < (h / 2) + 8; ++y)
+            for (size_t x = (w / 2) - 8; x < (w / 2) + 8; ++x) {
+                const size_t i = (y * w + x) * 4;
+                for (uint32_t c = 0; c < 3; ++c) {
+                    const int d = int(shm.inPixels[i + c]) - int(shm.outPixels[i + c]);
+                    sum += uint64_t(d < 0 ? -d : d);
+                    ++count;
+                }
+            }
+        Log("[diag] shm proxy/answer patch mean absolute difference = %.4f (of 255)",
+            count ? double(sum) / double(count) : 0.0);
+    }
 
     ++ns.evaluates;
     if (shm.hdr) {
